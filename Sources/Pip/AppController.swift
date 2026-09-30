@@ -53,6 +53,16 @@ final class AppController: NSObject, NSApplicationDelegate {
     return .terminateLater
   }
 
+  // Relaunching from Finder/Spotlight/Raycast while the menu-bar app is running
+  // only sends a reopen event, so bring back the panel the user closed.
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool
+  {
+    if !isTerminating {
+      panelController?.show()
+    }
+    return false
+  }
+
   private func createRendererAndPanel() {
     let candidateRenderer: FrameRenderer?
     do {

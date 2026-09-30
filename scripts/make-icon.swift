@@ -150,7 +150,8 @@ defer { try? fileManager.removeItem(at: iconset.deletingLastPathComponent()) }
 do {
   try fileManager.createDirectory(at: iconset, withIntermediateDirectories: true)
   for points in [16, 32, 128, 256, 512] {
-    try renderPNG(side: points).write(to: iconset.appendingPathComponent("icon_\(points)x\(points).png"))
+    try renderPNG(side: points).write(
+      to: iconset.appendingPathComponent("icon_\(points)x\(points).png"))
     try renderPNG(side: points * 2).write(
       to: iconset.appendingPathComponent("icon_\(points)x\(points)@2x.png"))
   }
