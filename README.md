@@ -1,107 +1,113 @@
 # PiP
 
-선택한 macOS 앱 창을 항상 위에 떠 있는 작은 PiP(화면 속 화면) 창으로 보여주는 네이티브 macOS 앱입니다.
-ScreenCaptureKit으로 창을 캡처하고 Metal로 렌더링합니다.
+**English** | [한국어](README.ko.md)
+
+A native macOS app that shows a selected app window in a small, always-on-top picture-in-picture panel.
+Windows are captured with ScreenCaptureKit and rendered with Metal.
 
 > [!WARNING]
-> 실험적 프리뷰입니다. 원본 앱이 다른 데스크톱(Space)에서 렌더링을 멈추면 PiP 화면도 멈춥니다. 자세한 내용은 [알려진 제한](#알려진-제한)을 참고하세요.
+> Experimental preview. If the source app stops rendering while it is on another desktop (Space), the PiP panel freezes too. See [Known limitations](#known-limitations).
 
-## 기능
+## Features
 
-- macOS 시스템 창 선택기(`SCContentSharingPicker`)로 창 하나를 골라 PiP 창에 실시간 표시
-- PiP 창은 항상 위에 표시되며, 모든 데스크톱(Spaces)과 전체 화면 앱 위에서도 유지
-- 메뉴 막대 전용 앱(Dock 아이콘 없음)
-- 최대 30fps, 원본 비율 유지, 커서 미표시
-- 캡처한 화면은 저장하거나 네트워크로 전송하지 않음
+- Pick a single window with the macOS system content picker (`SCContentSharingPicker`) and mirror it live
+- The panel floats above other windows and stays visible across all Spaces and over full-screen apps
+- Menu bar–only app (no Dock icon)
+- Up to 30 fps, aspect ratio preserved, cursor hidden
+- Captured frames are never saved or sent over the network
 
-지원하지 않는 것: 오디오 캡처, PiP 창에서 원본 창으로의 클릭/키 입력 전달.
+Not supported: audio capture, forwarding clicks or keystrokes from the panel to the source window.
 
-## 요구 사항
+## Requirements
 
-- Apple Silicon(arm64) Mac — 배포 바이너리는 arm64 전용
-- macOS 15.2 이상
-- 화면 기록 권한
+- Apple Silicon (arm64) Mac — release binaries are arm64 only
+- macOS 15.2 or later
+- Screen Recording permission
 
-## 설치
+## Installation
 
 ### Homebrew
 
-개인 tap([hanbong5938/homebrew-tap](https://github.com/hanbong5938/homebrew-tap))으로 제공합니다.
+Available from a personal tap ([hanbong5938/homebrew-tap](https://github.com/hanbong5938/homebrew-tap)).
 
 ```sh
 brew install --cask hanbong5938/tap/pip
 ```
 
-삭제:
+Uninstall:
 
 ```sh
 brew uninstall --cask pip
 ```
 
-### 직접 다운로드
+### Manual download
 
-1. [Releases](https://github.com/hanbong5938/pip/releases)에서 `PiP-v<버전>-macos-arm64.zip`을 받습니다.
-2. 함께 올라간 `SHA256SUMS.txt`로 체크섬을 확인합니다.
+1. Download `PiP-v<version>-macos-arm64.zip` from [Releases](https://github.com/hanbong5938/pip/releases).
+2. Verify it against the accompanying `SHA256SUMS.txt`:
 
    ```sh
    shasum -a 256 -c SHA256SUMS.txt
    ```
 
-3. 압축을 풀고 `Pip.app`을 `/Applications`로 옮긴 뒤 실행합니다.
+3. Unzip, move `Pip.app` to `/Applications`, and launch it.
 
-### 서명 및 Gatekeeper
+### Signing and Gatekeeper
 
-앱은 ad-hoc 서명만 되어 있으며 Developer ID 서명·Apple 공증을 받지 않았습니다. macOS가 실행을 막으면 출처와 체크섬을 확인한 경우에만 **시스템 설정 → 개인정보 보호 및 보안**에서 **그래도 열기**를 선택하세요.
+The app is ad-hoc signed only; it has no Developer ID signature and is not notarized by Apple. If macOS blocks it, and only after you have verified the source and checksum, allow it under **System Settings → Privacy & Security → Open Anyway**.
 
-## 사용법
+## Usage
 
-1. PiP를 실행하면 메뉴 막대에 `PiP` 항목과 PiP 창이 나타납니다.
-2. PiP 창의 **창 선택** 버튼 또는 메뉴 막대의 **창 선택**을 눌러 표시할 창을 고릅니다.
-3. 처음 실행 시 화면 기록 권한을 요청하면 허용합니다.
-4. PiP 창은 배경을 드래그해 옮기고, 가장자리를 끌어 크기를 조절합니다(최소 320×220).
+1. Launch PiP. A `PiP` menu bar item and the PiP panel appear.
+2. Click **창 선택** (Choose Window) in the panel or the menu bar and pick the window to mirror.
+3. Grant Screen Recording permission when prompted on first use.
+4. Drag the panel background to move it; drag its edges to resize (minimum 320×220).
 
-메뉴 막대 항목:
+Menu bar items (the UI is in Korean):
 
-| 메뉴 | 동작 |
+| Menu | Action |
 | --- | --- |
-| 창 선택 | 시스템 창 선택기를 열어 캡처할 창을 선택/변경 |
-| PiP 보이기 | 닫았거나 가려진 PiP 창을 다시 표시 |
-| 중지 | 캡처 중지 |
-| 종료 | 앱 종료 |
+| 창 선택 (Choose Window) | Open the system picker to select or change the captured window |
+| PiP 보이기 (Show PiP) | Bring back the PiP panel if it was closed or hidden |
+| 중지 (Stop) | Stop capturing |
+| 종료 (Quit) | Quit the app |
 
-PiP 창을 닫으면 캡처도 함께 중지됩니다.
+Closing the PiP panel also stops the capture.
 
-## 소스에서 빌드
+## Building from source
 
-Swift 6 이상 툴체인(Xcode 16 이상 또는 Command Line Tools)이 필요합니다.
+Requires a Swift 6+ toolchain (Xcode 16+ or Command Line Tools).
 
 ```sh
 git clone https://github.com/hanbong5938/pip.git
 cd pip
-bash scripts/build-app.sh release   # 또는 debug
+bash scripts/build-app.sh release   # or debug
 open build/Pip.app
 ```
 
-스크립트는 SwiftPM으로 빌드한 실행 파일과 Metal 셰이더 리소스 번들을 `build/Pip.app`으로 묶고 ad-hoc 서명합니다.
+The script bundles the SwiftPM executable and the Metal shader resource bundle into `build/Pip.app` and ad-hoc signs it.
 
-## 프로젝트 구조
+## Project structure
 
 ```
 Sources/Pip/
-├── Main.swift                     # 앱 진입점
-├── AppController.swift            # 앱 수명주기, 메뉴 막대 항목
-├── FloatingPanelController.swift  # 항상 위 PiP 패널
-├── CaptureSession.swift           # ScreenCaptureKit 선택기·스트림 관리, 복구
-├── FrameRenderer.swift            # Metal 렌더러
+├── Main.swift                     # Entry point
+├── AppController.swift            # App lifecycle, menu bar item
+├── FloatingPanelController.swift  # Always-on-top PiP panel
+├── CaptureSession.swift           # ScreenCaptureKit picker/stream management, recovery
+├── FrameRenderer.swift            # Metal renderer
 ├── CaptureFrame.swift / CaptureState.swift
-└── Resources/Video.metal          # 셰이더
-Resources/Info.plist               # 앱 번들 Info.plist
-scripts/build-app.sh               # .app 번들 빌드 스크립트
+└── Resources/Video.metal          # Shaders
+Resources/Info.plist               # App bundle Info.plist
+scripts/build-app.sh               # .app bundle build script
 ```
 
-## 알려진 제한
+## Known limitations
 
-- 원본 앱이 다른 데스크톱에서 렌더링을 멈추면 PiP에도 새 프레임이 들어오지 않습니다. 앱이 아니라 원본 앱/macOS 동작에 따른 제한입니다.
-- Chrome 동영상은 다른 데스크톱으로 옮기면 같은 프레임이 반복되는 현상이 확인되었습니다.
-- macOS 기본 시계 창처럼 백그라운드에서도 계속 그리는 앱은 다른 데스크톱에서도 갱신됩니다.
-- 창별 허용만 있는 화면 기록 권한 상태에서의 동작은 검증되지 않았습니다.
+- If the source app stops rendering while on another desktop, no new frames reach the PiP panel. This comes from the source app / macOS behavior, not from PiP.
+- Chrome video has been observed repeating the same frame after being moved to another desktop.
+- Apps that keep drawing in the background, such as the built-in macOS Clock window, continue to update from other desktops.
+- Behavior with per-window-only Screen Recording permission has not been verified.
+
+## License
+
+[MIT](LICENSE)
