@@ -84,7 +84,7 @@ bash scripts/build-app.sh release   # 또는 debug
 open build/Pip.app
 ```
 
-스크립트는 SwiftPM으로 빌드한 실행 파일과 Metal 셰이더 리소스 번들을 `build/Pip.app`으로 묶고 ad-hoc 서명합니다.
+스크립트는 SwiftPM으로 빌드한 실행 파일, Metal 셰이더 리소스 번들, 앱 아이콘을 `build/Pip.app`으로 묶고 ad-hoc 서명합니다. `scripts/make-icon.swift`를 고친 뒤 아이콘을 다시 만들려면 `swift scripts/make-icon.swift Resources/AppIcon.icns`를 실행하세요.
 
 ## 프로젝트 구조
 
@@ -98,7 +98,9 @@ Sources/Pip/
 ├── CaptureFrame.swift / CaptureState.swift
 └── Resources/Video.metal          # 셰이더
 Resources/Info.plist               # 앱 번들 Info.plist
+Resources/AppIcon.icns             # 앱 아이콘(생성물)
 scripts/build-app.sh               # .app 번들 빌드 스크립트
+scripts/make-icon.swift            # 앱 아이콘 생성 스크립트
 ```
 
 ## 알려진 제한

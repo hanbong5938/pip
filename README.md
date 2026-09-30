@@ -84,7 +84,7 @@ bash scripts/build-app.sh release   # or debug
 open build/Pip.app
 ```
 
-The script bundles the SwiftPM executable and the Metal shader resource bundle into `build/Pip.app` and ad-hoc signs it.
+The script bundles the SwiftPM executable, the Metal shader resource bundle, and the app icon into `build/Pip.app` and ad-hoc signs it. To regenerate the icon after editing `scripts/make-icon.swift`, run `swift scripts/make-icon.swift Resources/AppIcon.icns`.
 
 ## Project structure
 
@@ -98,7 +98,9 @@ Sources/Pip/
 ├── CaptureFrame.swift / CaptureState.swift
 └── Resources/Video.metal          # Shaders
 Resources/Info.plist               # App bundle Info.plist
+Resources/AppIcon.icns             # App icon (generated)
 scripts/build-app.sh               # .app bundle build script
+scripts/make-icon.swift            # App icon generator
 ```
 
 ## Known limitations

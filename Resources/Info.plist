@@ -8,6 +8,8 @@
     <string>PiP</string>
     <key>CFBundleExecutable</key>
     <string>Pip</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>dev.local.pip</string>
     <key>CFBundleInfoDictionaryVersion</key>
