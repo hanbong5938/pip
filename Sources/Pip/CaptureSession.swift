@@ -126,6 +126,7 @@ final class CaptureSession {
     currentStream = nil
     publish(.stopped("중지됨"))
     stopTask = nil
+    deactivatePickerIfIdle()
 
     if selectionRequestedAfterStop {
       selectionRequestedAfterStop = false
@@ -242,6 +243,7 @@ final class CaptureSession {
     }
 
     selectionInProgress = false
+    deactivatePickerIfIdle()
     let previousState = stateBeforeSelection
     stateBeforeSelection = nil
     if let previousState,
@@ -261,6 +263,7 @@ final class CaptureSession {
     guard selectionInProgress, stopTask == nil, !userStopped else { return }
 
     selectionInProgress = false
+    deactivatePickerIfIdle()
     let previousState = stateBeforeSelection
     stateBeforeSelection = nil
     if let previousState,
@@ -293,6 +296,7 @@ final class CaptureSession {
       update.filter.includedWindows.count == 1
     else {
       selectionInProgress = false
+      deactivatePickerIfIdle()
       let previousState = stateBeforeSelection
       stateBeforeSelection = nil
       if let previousState,
@@ -323,7 +327,10 @@ final class CaptureSession {
   }
 
   private func drainPendingSources() async {
-    defer { replacementTask = nil }
+    defer {
+      replacementTask = nil
+      deactivatePickerIfIdle()
+    }
 
     while !userStopped {
       guard let source = pendingSource else { return }
@@ -582,6 +589,7 @@ final class CaptureSession {
     frameGate.pause(context.generation)
     _ = advanceGeneration()
     await stop(context, intentionally: false)
+    deactivatePickerIfIdle()
 
     guard operationID == stoppedOperation, currentStream == nil else { return }
     if wasUserStopped || userStopped {
@@ -642,6 +650,18 @@ final class CaptureSession {
     guard state != newState else { return }
     state = newState
     onStateChange?(newState)
+  }
+
+  /// `SCContentSharingPicker.isActive` keeps the app listed in the system
+  /// screen-sharing menu bar item even without a running stream, so it must
+  /// only stay on while a selection or capture is in flight.
+  private func deactivatePickerIfIdle() {
+    guard !selectionInProgress,
+      currentStream == nil,
+      pendingSource == nil,
+      replacementTask == nil
+    else { return }
+    picker.isActive = false
   }
 
   private func advanceGeneration() -> UInt64 {
