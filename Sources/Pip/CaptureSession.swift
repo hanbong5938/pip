@@ -504,7 +504,11 @@ final class CaptureSession {
       context.stream === event.stream,
       !intentionalStops.contains(ObjectIdentifier(event.stream))
     else { return }
-    await handleStopped(context, failureMessage: event.message)
+    await handleStopped(
+      context,
+      stoppedByUser: event.stoppedByUser,
+      failureMessage: event.message
+    )
   }
 
   private func handleFrameStatus(_ event: StreamFrameStatusEvent) {
@@ -576,6 +580,7 @@ final class CaptureSession {
 
   private func handleStopped(
     _ context: StreamContext,
+    stoppedByUser: Bool = false,
     failureMessage: String? = nil
   ) async {
     guard currentStream === context else { return }
@@ -592,7 +597,7 @@ final class CaptureSession {
     deactivatePickerIfIdle()
 
     guard operationID == stoppedOperation, currentStream == nil else { return }
-    if wasUserStopped || userStopped {
+    if stoppedByUser || wasUserStopped || userStopped {
       publish(.stopped("중지됨"))
     } else {
       publish(.failed(failureMessage ?? "캡처가 중지되었습니다"))
@@ -1426,17 +1431,15 @@ private final class StreamEvent: @unchecked Sendable {
 private final class StreamStopEvent: @unchecked Sendable {
   let stream: SCStream
   let message: String
+  /// The user ended sharing from the system menu bar control.
+  let stoppedByUser: Bool
 
-  init(stream: SCStream, message: String) {
+  init(stream: SCStream, error: NSError) {
     self.stream = stream
-    self.message = message
-  }
-
-  convenience init(stream: SCStream, error: NSError) {
-    self.init(
-      stream: stream,
-      message: "\(error.domain) (\(error.code)): \(error.localizedDescription)"
-    )
+    message = "\(error.domain) (\(error.code)): \(error.localizedDescription)"
+    stoppedByUser =
+      error.domain == SCStreamErrorDomain
+      && error.code == SCStreamError.Code.userStopped.rawValue
   }
 }
 
