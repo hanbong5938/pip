@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PiP — Mac의 모든 창을 PiP로</title>
+    <meta name="description" content="선택한 창을 항상 위에 떠 있는 작은 PiP 패널로 보여주는 macOS 메뉴 막대 앱. Homebrew로 설치. 무료 오픈 소스(MIT).">
+    <link rel="canonical" href="https://hanbong5938.github.io/pip/ko/">
+    <link rel="alternate" hreflang="en" href="https://hanbong5938.github.io/pip/">
+    <link rel="alternate" hreflang="ko" href="https://hanbong5938.github.io/pip/ko/">
+    <meta property="og:type" content="website">
+    <meta property="og:locale" content="ko_KR">
+    <meta property="og:title" content="PiP — Mac의 모든 창을 PiP로">
+    <meta property="og:description" content="어떤 창이든 항상 위에 떠 있는 패널로. brew install --cask hanbong5938/tap/pip">
+    <meta property="og:url" content="https://hanbong5938.github.io/pip/ko/">
+    <meta property="og:image" content="https://hanbong5938.github.io/pip/assets/icon.png">
+    <meta name="twitter:card" content="summary">
+    <link rel="icon" type="image/png" href="../assets/favicon.png">
+    <link rel="apple-touch-icon" href="../assets/icon.png">
+    <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+    <header class="site-header">
+        <div class="container">
+            <a class="brand" href="./"><img src="../assets/favicon.png" alt="">PiP</a>
+            <nav class="nav">
+                <a href="#features">기능</a>
+                <a href="#install">설치</a>
+                <a href="https://github.com/hanbong5938/pip">GitHub</a>
+                <a class="lang" href="../" hreflang="en" lang="en">English</a>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <section class="hero">
+            <div class="container">
+                <img class="hero-icon" src="../assets/icon.png" alt="PiP 앱 아이콘">
+                <h1>PiP</h1>
+                <p class="tagline">메뉴 막대에서 바로, 어떤 창이든 PiP로. 터미널, 대시보드, 영상, 문서를 모든 창 위에 떠 있는 작은 패널로 띄워 보세요.</p>
+                <span class="badge">무료 · 오픈 소스 · 실험적 프리뷰</span>
+
+                <div class="cmd" aria-label="Homebrew 설치 명령">
+                    <code>brew install --cask hanbong5938/tap/pip</code>
+                    <button class="copy" type="button" data-done="복사됨!">복사</button>
+                </div>
+
+                <div class="actions">
+                    <a class="btn primary" href="#install">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg>
+                        Homebrew로 설치
+                    </a>
+                    <a class="btn" href="https://github.com/hanbong5938/pip/releases">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>
+                        .zip 다운로드
+                    </a>
+                    <a class="btn" href="https://github.com/hanbong5938/pip">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 00-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.87-1.37-3.87-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.29 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 015.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.8 1.19 1.83 1.19 3.09 0 4.42-2.7 5.39-5.27 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0012 .5z"/></svg>
+                        GitHub
+                    </a>
+                </div>
+
+                <div class="mock" aria-hidden="true">
+                    <div class="mock-menubar"><span>Wi-Fi</span><img src="../assets/favicon.png" alt=""><span>12:46</span></div>
+                    <div class="mock-window">
+                        <div class="mock-titlebar"><span></span><span></span><span></span></div>
+                        <div class="mock-lines">
+                            <div><span class="dim">~/project</span> $ swift build</div>
+                            <div>Compiling Pip PiPSession.swift</div>
+                            <div>Compiling Pip FrameRenderer.swift</div>
+                            <div>Build complete!</div>
+                            <div><span class="dim">~/project</span> $ ▍</div>
+                        </div>
+                    </div>
+                    <div class="mock-pip"><span class="mock-pip-label">1. Safari</span></div>
+                </div>
+            </div>
+        </section>
+
+        <section id="features">
+            <div class="container">
+                <div class="section-head">
+                    <h2>PiP에 필요한 모든 것</h2>
+                    <p>영상 플레이어뿐 아니라 어떤 창이든. ScreenCaptureKit으로 캡처하고 Metal로 렌더링합니다.</p>
+                </div>
+                <div class="grid">
+                    <div class="card"><span class="num">01</span><h3>모든 창</h3><p>앱 안의 창 목록이나 macOS 시스템 선택기에서 창을 고르면, 모든 데스크탑(Space)과 전체 화면 앱 위에 항상 떠 있는 패널로 실시간 표시합니다.</p></div>
+                    <div class="card"><span class="num">02</span><h3>여러 개의 PiP</h3><p><kbd>⌘N</kbd>으로 필요한 만큼 패널을 엽니다. 각 PiP는 자기 창과 설정, 크기, 위치를 따로 가집니다.</p></div>
+                    <div class="card"><span class="num">03</span><h3>영역 선택</h3><p>패널 위에서 바로 드래그해 필요한 부분만 보여줍니다. 채팅 창, 앨범 아트, 차트 하나만.</p></div>
+                    <div class="card"><span class="num">04</span><h3>프레임 레이트 · 불투명도</h3><p>PiP마다 1 / 5 / 15 / 30 / 60 fps와 불투명도를 따로 설정. 캡처 해상도는 패널 크기를 따릅니다.</p></div>
+                    <div class="card"><span class="num">05</span><h3>클릭 통과</h3><p>어느 앱에서든 <kbd>⌃⌥P</kbd>로 켜고 끕니다. 켜면 클릭이 패널을 지나 아래 창으로 전달됩니다.</p></div>
+                    <div class="card"><span class="num">06</span><h3>회전 · 크기</h3><p>영상을 90°씩 회전하고, 작게 / 보통 / 크게 또는 정확한 사용자 지정 크기로. 비율은 그대로 유지됩니다.</p></div>
+                    <div class="card"><span class="num">07</span><h3>메뉴 막대 전용</h3><p>Dock 아이콘 없음. 패널 위 호버 컨트롤, 로그인 시 실행과 새 PiP 기본값을 고르는 설정 창.</p></div>
+                    <div class="card"><span class="num">08</span><h3>한국어 · 영어</h3><p>UI가 시스템 언어를 따릅니다.</p></div>
+                    <div class="card"><span class="num">09</span><h3>개인정보 보호</h3><p>프레임은 기기 안에서만 처리되며 저장하거나 네트워크로 보내지 않습니다.</p></div>
+                </div>
+            </div>
+        </section>
+
+        <section id="uses">
+            <div class="container">
+                <div class="section-head">
+                    <h2>이렇게 써요</h2>
+                    <p>영상 보기 그 이상.</p>
+                </div>
+                <ul class="uses">
+                    <li><span class="emoji">🤖</span><strong>바이브 코딩</strong>다른 일을 하면서 에이전트의 터미널을 계속 지켜보기.</li>
+                    <li><span class="emoji">💼</span><strong>회의</strong>Zoom·Teams 통화 옆에 참고 문서 띄우기.</li>
+                    <li><span class="emoji">📊</span><strong>모니터링</strong>대시보드, 로그, CI 상태를 늘 보이게.</li>
+                    <li><span class="emoji">🎵</span><strong>음악</strong>앨범 아트와 재생 컨트롤만 잘라서.</li>
+                    <li><span class="emoji">🎬</span><strong>스트리밍</strong>지원 플레이어가 아니어도 어떤 영상이든.</li>
+                </ul>
+            </div>
+        </section>
+
+        <section id="install">
+            <div class="container">
+                <div class="section-head">
+                    <h2>설치</h2>
+                    <p>Homebrew로 설치하면 업데이트도 간편합니다.</p>
+                </div>
+                <div class="install">
+                    <div class="card">
+                        <h3>🍺 Homebrew <span class="tag">추천</span></h3>
+                        <p>개인 탭 <a href="https://github.com/hanbong5938/homebrew-tap">hanbong5938/homebrew-tap</a>으로 배포됩니다.</p>
+
+                        <p class="step">설치</p>
+                        <div class="cmd">
+                            <code>brew install --cask hanbong5938/tap/pip</code>
+                            <button class="copy" type="button" data-done="복사됨!">복사</button>
+                        </div>
+
+                        <p class="step">업데이트</p>
+                        <div class="cmd">
+                            <code>brew update &amp;&amp; brew upgrade --cask pip</code>
+                            <button class="copy" type="button" data-done="복사됨!">복사</button>
+                        </div>
+
+                        <p class="step">삭제</p>
+                        <div class="cmd">
+                            <code>brew uninstall --cask pip</code>
+                            <button class="copy" type="button" data-done="복사됨!">복사</button>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h3>📦 직접 다운로드</h3>
+                        <ol>
+                            <li><a href="https://github.com/hanbong5938/pip/releases">Releases</a>에서 <code>PiP-v&lt;version&gt;-macos-arm64.zip</code>과 <code>SHA256SUMS.txt</code>를 받습니다.</li>
+                            <li>체크섬을 확인합니다:
+                                <div class="cmd" style="margin-top:8px">
+                                    <code>shasum -a 256 -c SHA256SUMS.txt</code>
+                                    <button class="copy" type="button" data-done="복사됨!">복사</button>
+                                </div>
+                            </li>
+                            <li>압축을 풀고 <code>Pip.app</code>을 <code>/Applications</code>로 옮겨 실행합니다.</li>
+                            <li>처음 사용할 때 화면 기록 권한을 허용합니다.</li>
+                        </ol>
+                    </div>
+                </div>
+
+                <div class="note">
+                    <strong>Gatekeeper:</strong> 이 앱은 ad-hoc 서명만 되어 있고 Developer ID 서명과 Apple 공증(notarization)이 없습니다. macOS가 실행을 막으면, 출처와 체크섬을 확인한 경우에만 <strong>시스템 설정 → 개인정보 보호 및 보안 → 그래도 열기</strong>로 허용하세요.
+                </div>
+            </div>
+        </section>
+
+        <section id="requirements">
+            <div class="container">
+                <div class="facts">
+                    <div class="card">
+                        <h3>시스템 요구 사항</h3>
+                        <ul>
+                            <li>Apple Silicon(arm64) Mac</li>
+                            <li>macOS 15.2 이상</li>
+                            <li>화면 기록 권한</li>
+                        </ul>
+                    </div>
+                    <div class="card">
+                        <h3>알려진 제한</h3>
+                        <ul>
+                            <li>원본 앱이 다른 데스크탑(Space)에서 그리기를 멈추면 PiP 패널도 멈춥니다.</li>
+                            <li>오디오는 캡처하지 않으며, 패널에서의 클릭·키 입력은 원본 창으로 전달되지 않습니다.</li>
+                            <li>로그인 시 실행은 시스템 설정 › 로그인 항목에서 승인이 필요할 수 있습니다.</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="privacy" class="privacy">
+            <div class="container">
+                <div class="card">
+                    <h3>개인정보 처리</h3>
+                    <p>PiP는 선택한 창을 패널에 실시간으로 보여주기 위해서만 화면 기록 권한을 요청합니다. 프레임은 Mac의 메모리 안에서만 처리되며 녹화·저장·업로드·공유되지 않습니다. 분석·추적 도구와 네트워크 요청이 없고, 설정은 기기의 UserDefaults에만 저장됩니다.</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>PiP는 <a href="https://github.com/hanbong5938/pip/blob/main/LICENSE">MIT 라이선스</a>의 오픈 소스입니다 · <a href="https://github.com/hanbong5938/pip/issues">이슈 제보</a></p>
+        </div>
+    </footer>
+
+    <script src="../assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PiP — Picture-in-Picture for any Mac window</title>
+    <meta name="description" content="Native macOS menu bar app that mirrors any window into a floating, always-on-top picture-in-picture panel. Install with Homebrew. Free and open source (MIT).">
+    <link rel="canonical" href="https://hanbong5938.github.io/pip/">
+    <link rel="alternate" hreflang="en" href="https://hanbong5938.github.io/pip/">
+    <link rel="alternate" hreflang="ko" href="https://hanbong5938.github.io/pip/ko/">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="PiP — Picture-in-Picture for any Mac window">
+    <meta property="og:description" content="Mirror any window into a floating, always-on-top panel. brew install --cask hanbong5938/tap/pip">
+    <meta property="og:url" content="https://hanbong5938.github.io/pip/">
+    <meta property="og:image" content="https://hanbong5938.github.io/pip/assets/icon.png">
+    <meta name="twitter:card" content="summary">
+    <link rel="icon" type="image/png" href="assets/favicon.png">
+    <link rel="apple-touch-icon" href="assets/icon.png">
+    <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+    <header class="site-header">
+        <div class="container">
+            <a class="brand" href="./"><img src="assets/favicon.png" alt="">PiP</a>
+            <nav class="nav">
+                <a href="#features">Features</a>
+                <a href="#install">Install</a>
+                <a href="https://github.com/hanbong5938/pip">GitHub</a>
+                <a class="lang" href="ko/" hreflang="ko" lang="ko">한국어</a>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <section class="hero">
+            <div class="container">
+                <img class="hero-icon" src="assets/icon.png" alt="PiP app icon">
+                <h1>PiP</h1>
+                <p class="tagline">Picture-in-Picture for any window — right from the menu bar. Mirror a terminal, dashboard, video, or document into a small panel that floats above everything.</p>
+                <span class="badge">Free &amp; open source · Experimental preview</span>
+
+                <div class="cmd" aria-label="Homebrew install command">
+                    <code>brew install --cask hanbong5938/tap/pip</code>
+                    <button class="copy" type="button" data-done="Copied!">Copy</button>
+                </div>
+
+                <div class="actions">
+                    <a class="btn primary" href="#install">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg>
+                        Install with Homebrew
+                    </a>
+                    <a class="btn" href="https://github.com/hanbong5938/pip/releases">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>
+                        Download .zip
+                    </a>
+                    <a class="btn" href="https://github.com/hanbong5938/pip">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 00-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.87-1.37-3.87-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.29 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 015.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.8 1.19 1.83 1.19 3.09 0 4.42-2.7 5.39-5.27 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0012 .5z"/></svg>
+                        GitHub
+                    </a>
+                </div>
+
+                <div class="mock" aria-hidden="true">
+                    <div class="mock-menubar"><span>Wi-Fi</span><img src="assets/favicon.png" alt=""><span>12:46</span></div>
+                    <div class="mock-window">
+                        <div class="mock-titlebar"><span></span><span></span><span></span></div>
+                        <div class="mock-lines">
+                            <div><span class="dim">~/project</span> $ swift build</div>
+                            <div>Compiling Pip PiPSession.swift</div>
+                            <div>Compiling Pip FrameRenderer.swift</div>
+                            <div>Build complete!</div>
+                            <div><span class="dim">~/project</span> $ ▍</div>
+                        </div>
+                    </div>
+                    <div class="mock-pip"><span class="mock-pip-label">1. Safari</span></div>
+                </div>
+            </div>
+        </section>
+
+        <section id="features">
+            <div class="container">
+                <div class="section-head">
+                    <h2>Everything you need in PiP</h2>
+                    <p>Works with any window, not just video players. Captured with ScreenCaptureKit, rendered with Metal.</p>
+                </div>
+                <div class="grid">
+                    <div class="card"><span class="num">01</span><h3>Any window</h3><p>Pick from the in-app window list or the macOS system picker and mirror it live in an always-on-top panel, across all Spaces and over full-screen apps.</p></div>
+                    <div class="card"><span class="num">02</span><h3>Multiple PiPs</h3><p>Open as many panels as you need with <kbd>⌘N</kbd>. Each one mirrors its own window with its own settings, size, and position.</p></div>
+                    <div class="card"><span class="num">03</span><h3>Region capture</h3><p>Drag directly on the panel to show only the part you need — a chat pane, album art, a single chart.</p></div>
+                    <div class="card"><span class="num">04</span><h3>FPS &amp; opacity</h3><p>1 / 5 / 15 / 30 / 60 fps and adjustable opacity per PiP. Capture resolution follows the panel size.</p></div>
+                    <div class="card"><span class="num">05</span><h3>Click-through</h3><p>Toggle with <kbd>⌃⌥P</kbd> from any app so clicks pass through the panels to the windows underneath.</p></div>
+                    <div class="card"><span class="num">06</span><h3>Rotate &amp; resize</h3><p>Rotate the video in 90° steps, use Small / Medium / Large presets or an exact custom size; aspect ratio stays locked.</p></div>
+                    <div class="card"><span class="num">07</span><h3>Menu bar only</h3><p>No Dock icon. Hover controls on each panel, a Settings window with launch at login, and defaults for new PiPs.</p></div>
+                    <div class="card"><span class="num">08</span><h3>English &amp; Korean</h3><p>The UI follows your system language.</p></div>
+                    <div class="card"><span class="num">09</span><h3>Private by design</h3><p>Frames are processed on-device only. Nothing is saved or sent over the network.</p></div>
+                </div>
+            </div>
+        </section>
+
+        <section id="uses">
+            <div class="container">
+                <div class="section-head">
+                    <h2>How people use PiP</h2>
+                    <p>More than just watching videos.</p>
+                </div>
+                <ul class="uses">
+                    <li><span class="emoji">🤖</span><strong>Vibe coding</strong>Keep the agent's terminal in view while you do something else.</li>
+                    <li><span class="emoji">💼</span><strong>Meetings</strong>Pin reference docs next to a Zoom or Teams call.</li>
+                    <li><span class="emoji">📊</span><strong>Monitoring</strong>Dashboards, logs, and CI status always visible.</li>
+                    <li><span class="emoji">🎵</span><strong>Music</strong>Crop to just the album art and controls.</li>
+                    <li><span class="emoji">🎬</span><strong>Streaming</strong>Any video in any player, not only supported ones.</li>
+                </ul>
+            </div>
+        </section>
+
+        <section id="install">
+            <div class="container">
+                <div class="section-head">
+                    <h2>Install</h2>
+                    <p>Homebrew is the easiest way to install and keep PiP up to date.</p>
+                </div>
+                <div class="install">
+                    <div class="card">
+                        <h3>🍺 Homebrew <span class="tag">Recommended</span></h3>
+                        <p>Available from the personal tap <a href="https://github.com/hanbong5938/homebrew-tap">hanbong5938/homebrew-tap</a>.</p>
+
+                        <p class="step">Install</p>
+                        <div class="cmd">
+                            <code>brew install --cask hanbong5938/tap/pip</code>
+                            <button class="copy" type="button" data-done="Copied!">Copy</button>
+                        </div>
+
+                        <p class="step">Update</p>
+                        <div class="cmd">
+                            <code>brew update &amp;&amp; brew upgrade --cask pip</code>
+                            <button class="copy" type="button" data-done="Copied!">Copy</button>
+                        </div>
+
+                        <p class="step">Uninstall</p>
+                        <div class="cmd">
+                            <code>brew uninstall --cask pip</code>
+                            <button class="copy" type="button" data-done="Copied!">Copy</button>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h3>📦 Manual download</h3>
+                        <ol>
+                            <li>Download <code>PiP-v&lt;version&gt;-macos-arm64.zip</code> and <code>SHA256SUMS.txt</code> from <a href="https://github.com/hanbong5938/pip/releases">Releases</a>.</li>
+                            <li>Verify the checksum:
+                                <div class="cmd" style="margin-top:8px">
+                                    <code>shasum -a 256 -c SHA256SUMS.txt</code>
+                                    <button class="copy" type="button" data-done="Copied!">Copy</button>
+                                </div>
+                            </li>
+                            <li>Unzip, move <code>Pip.app</code> to <code>/Applications</code>, and launch it.</li>
+                            <li>Grant Screen Recording permission when prompted.</li>
+                        </ol>
+                    </div>
+                </div>
+
+                <div class="note">
+                    <strong>Gatekeeper:</strong> the app is ad-hoc signed only — it has no Developer ID signature and is not notarized by Apple. If macOS blocks it, and only after you have verified the source and checksum, allow it under <strong>System Settings → Privacy &amp; Security → Open Anyway</strong>.
+                </div>
+            </div>
+        </section>
+
+        <section id="requirements">
+            <div class="container">
+                <div class="facts">
+                    <div class="card">
+                        <h3>System requirements</h3>
+                        <ul>
+                            <li>Apple Silicon (arm64) Mac</li>
+                            <li>macOS 15.2 or later</li>
+                            <li>Screen Recording permission</li>
+                        </ul>
+                    </div>
+                    <div class="card">
+                        <h3>Known limitations</h3>
+                        <ul>
+                            <li>If the source app stops rendering while it is on another desktop (Space), the PiP panel freezes too.</li>
+                            <li>No audio capture; clicks and keystrokes are not forwarded to the source window.</li>
+                            <li>Launch at login may need approval in System Settings › Login Items.</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="privacy" class="privacy">
+            <div class="container">
+                <div class="card">
+                    <h3>Privacy</h3>
+                    <p>PiP requests Screen Recording permission only to show the window you select in a live panel. Frames are processed in memory on your Mac and are never recorded, saved, uploaded, or shared. There are no analytics, no tracking, and no network requests. Settings are stored locally in UserDefaults.</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>PiP is open source under the <a href="https://github.com/hanbong5938/pip/blob/main/LICENSE">MIT License</a> · <a href="https://github.com/hanbong5938/pip/issues">Report an issue</a></p>
+        </div>
+    </footer>
+
+    <script src="assets/site.js"></script>
+</body>
+</html>

@@ -5,6 +5,8 @@
 A native macOS app that shows selected app windows in small, always-on-top picture-in-picture panels.
 Windows are captured with ScreenCaptureKit and rendered with Metal.
 
+Website: <https://hanbong5938.github.io/pip/>
+
 > [!WARNING]
 > Experimental preview. If the source app stops rendering while it is on another desktop (Space), the PiP panel freezes too. See [Known limitations](#known-limitations).
 
@@ -169,6 +171,7 @@ Resources/{en,ko}.lproj/            # Localized InfoPlist.strings
 Resources/AppIcon.icns              # App icon (generated)
 scripts/build-app.sh                # .app bundle build script
 scripts/make-icon.swift             # App icon generator
+docs/                               # GitHub Pages site (en, ko/)
 ```
 
 ## Known limitations
