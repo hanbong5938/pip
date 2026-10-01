@@ -14,6 +14,14 @@
 /* Renderer */
 "renderer.unavailable" = "렌더러를 시작할 수 없습니다.";
 "renderer.error" = "렌더러 오류: %@";
+"renderer.error.noMetalDevice" = "Metal 장치를 사용할 수 없습니다.";
+"renderer.error.commandQueueUnavailable" = "Metal 명령 큐를 만들 수 없습니다.";
+"renderer.error.textureCacheUnavailable" = "Core Video 텍스처 캐시를 만들 수 없습니다(%d).";
+"renderer.error.shaderResourceUnavailable" = "비디오 셰이더 리소스를 사용할 수 없습니다.";
+"renderer.error.shaderSourceUnavailable" = "비디오 셰이더 소스를 읽을 수 없습니다.";
+"renderer.error.shaderCompilationFailed" = "비디오 셰이더 컴파일에 실패했습니다: %@";
+"renderer.error.pipelineUnavailable" = "Metal 렌더 파이프라인을 만들 수 없습니다.";
+"renderer.error.samplerUnavailable" = "Metal 샘플러를 만들 수 없습니다.";
 
 /* Floating panel */
 "panel.accessibilityLabel" = "화면 속 화면";

@@ -18,21 +18,21 @@ private enum FrameRendererError: LocalizedError {
   var errorDescription: String? {
     switch self {
     case .noMetalDevice:
-      return "Metal device is unavailable."
+      return L10n.string("renderer.error.noMetalDevice")
     case .commandQueueUnavailable:
-      return "Metal command queue could not be created."
+      return L10n.string("renderer.error.commandQueueUnavailable")
     case .textureCacheUnavailable(let status):
-      return "Core Video texture cache could not be created (\(status))."
+      return L10n.format("renderer.error.textureCacheUnavailable", status)
     case .shaderResourceUnavailable:
-      return "Video shader resource is unavailable."
+      return L10n.string("renderer.error.shaderResourceUnavailable")
     case .shaderSourceUnavailable:
-      return "Video shader source could not be read."
+      return L10n.string("renderer.error.shaderSourceUnavailable")
     case .shaderCompilationFailed(let error):
-      return "Video shader compilation failed: \(error.localizedDescription)"
+      return L10n.format("renderer.error.shaderCompilationFailed", error.localizedDescription)
     case .pipelineUnavailable:
-      return "Metal render pipeline could not be created."
+      return L10n.string("renderer.error.pipelineUnavailable")
     case .samplerUnavailable:
-      return "Metal sampler could not be created."
+      return L10n.string("renderer.error.samplerUnavailable")
     }
   }
 }
@@ -137,7 +137,9 @@ final class FrameRenderer: @unchecked Sendable {
       throw FrameRendererError.textureCacheUnavailable(cacheStatus)
     }
 
-    guard let shaderURL = Bundle.module.url(forResource: "Video", withExtension: "metal") else {
+    guard let bundle = PipResources.bundle,
+      let shaderURL = bundle.url(forResource: "Video", withExtension: "metal")
+    else {
       throw FrameRendererError.shaderResourceUnavailable
     }
     let shaderSource: String
