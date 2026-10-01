@@ -13,7 +13,7 @@ Windows are captured with ScreenCaptureKit and rendered with Metal.
 - Pick a single window with the macOS system content picker (`SCContentSharingPicker`) and mirror it live
 - The panel floats above other windows and stays visible across all Spaces and over full-screen apps
 - Menu bar–only app (no Dock icon)
-- Up to 30 fps, aspect ratio preserved, cursor hidden
+- Up to 30 fps, aspect ratio preserved, cursor hidden; capture resolution follows the panel size
 - Rotate the mirrored video in 90° steps from the menu bar (display only)
 - Captured frames are never saved or sent over the network
 
@@ -61,7 +61,7 @@ The app is ad-hoc signed only; it has no Developer ID signature and is not notar
 1. Launch PiP. A `PiP` menu bar item and the PiP panel appear.
 2. Click **창 선택** (Choose Window) in the panel or the menu bar and pick the window to mirror.
 3. Grant Screen Recording permission when prompted on first use.
-4. Drag the panel background to move it; drag its edges to resize (minimum 320×220).
+4. Drag the panel background to move it; drag its edges to resize (minimum 320×220). While a window is captured, the panel keeps the source window's aspect ratio. The panel's size and position are remembered across launches. To set an exact size, choose 크기 ▸ 사용자 지정… (Custom…) and enter the video area width × height in points; while a window is captured, the other value follows the source aspect ratio. Press Enter to apply or Esc to cancel.
 
 Menu bar items (the UI is in Korean):
 
@@ -70,6 +70,7 @@ Menu bar items (the UI is in Korean):
 | 창 선택 (Choose Window) | Open the system picker to select or change the captured window |
 | PiP 보이기 (Show PiP) | Bring back the PiP panel if it was closed or hidden |
 | 화면 회전 (Rotate) | Rotate the PiP video 90° clockwise on each click (the item shows the current angle); the panel's video area swaps width and height. Not saved between launches |
+| 크기 (Size) | Resize the panel: 작게 (Small) / 보통 (Medium) / 크게 (Large) / 사용자 지정… (Custom…) |
 | 중지 (Stop) | Stop capturing |
 | 종료 (Quit) | Quit the app |
 
@@ -112,6 +113,7 @@ scripts/make-icon.swift            # App icon generator
 - Chrome video has been observed repeating the same frame after being moved to another desktop.
 - Apps that keep drawing in the background, such as the built-in macOS Clock window, continue to update from other desktops.
 - Behavior with per-window-only Screen Recording permission has not been verified.
+- The panel never activates the app, so macOS does not show resize cursors over its edges while another app is active. The edges are still draggable to resize; there is no public API for a background app to change the cursor.
 
 ## License
 
