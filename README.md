@@ -14,6 +14,7 @@ Windows are captured with ScreenCaptureKit and rendered with Metal.
 - The panel floats above other windows and stays visible across all Spaces and over full-screen apps
 - Menu bar–only app (no Dock icon)
 - Up to 30 fps, aspect ratio preserved, cursor hidden
+- Rotate the mirrored video in 90° steps from the menu bar (display only)
 - Captured frames are never saved or sent over the network
 
 Not supported: audio capture, forwarding clicks or keystrokes from the panel to the source window.
@@ -68,6 +69,7 @@ Menu bar items (the UI is in Korean):
 | --- | --- |
 | 창 선택 (Choose Window) | Open the system picker to select or change the captured window |
 | PiP 보이기 (Show PiP) | Bring back the PiP panel if it was closed or hidden |
+| 화면 회전 (Rotate) | Rotate the PiP video 90° clockwise on each click (the item shows the current angle); the panel's video area swaps width and height. Not saved between launches |
 | 중지 (Stop) | Stop capturing |
 | 종료 (Quit) | Quit the app |
 
@@ -96,6 +98,7 @@ Sources/Pip/
 ├── CaptureSession.swift           # ScreenCaptureKit picker/stream management, recovery
 ├── FrameRenderer.swift            # Metal renderer
 ├── CaptureFrame.swift / CaptureState.swift
+├── VideoRotation.swift            # Display rotation state (0/90/180/270°)
 └── Resources/Video.metal          # Shaders
 Resources/Info.plist               # App bundle Info.plist
 Resources/AppIcon.icns             # App icon (generated)

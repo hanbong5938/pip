@@ -83,6 +83,8 @@ private struct VideoUniforms {
   var scale: SIMD2<Float>
   var sourceMin: SIMD2<Float>
   var sourceMax: SIMD2<Float>
+  /// Clockwise quarter turns (0-3) applied to the output; mirrors Video.metal.
+  var rotation: UInt32
 }
 @MainActor
 private final class FrameRendererDelegateBridge: NSObject, MTKViewDelegate {
@@ -106,6 +108,7 @@ final class FrameRenderer: @unchecked Sendable {
   @MainActor private let pipelineState: MTLRenderPipelineState
   @MainActor private let samplerState: MTLSamplerState
   @MainActor private let delegateBridge: FrameRendererDelegateBridge
+  @MainActor private var rotation: VideoRotation = .none
 
   @MainActor
   init() throws {
@@ -191,6 +194,22 @@ final class FrameRenderer: @unchecked Sendable {
   @MainActor
   var view: MTKView {
     metalView
+  }
+
+  /// Rotates the displayed video clockwise and repaints the last frame
+  /// immediately, even while capture delivers no new frames.
+  @MainActor
+  func setRotation(_ rotation: VideoRotation) {
+    guard rotation != self.rotation else { return }
+    self.rotation = rotation
+    shared.lock.lock()
+    guard !shared.shuttingDown else {
+      shared.lock.unlock()
+      return
+    }
+    shared.needsRedraw = true
+    shared.lock.unlock()
+    requestMainRedrawIfNeeded()
   }
 
   /// Replaces the bounded mailbox with the newest frame. The capture
@@ -469,7 +488,11 @@ final class FrameRenderer: @unchecked Sendable {
 
     let sourceWidth = maxX - minX
     let sourceHeight = maxY - minY
-    let sourceAspect = sourceWidth / sourceHeight
+    // A quarter-turn rotation displays the source with its width and height
+    // exchanged, so the aspect fit uses the rotated dimensions. The UV corner
+    // math below stays unrotated; the vertex shader applies the rotation.
+    let sourceAspect =
+      rotation.swapsDimensions ? sourceHeight / sourceWidth : sourceWidth / sourceHeight
     let drawableAspect = drawableSize.width / drawableSize.height
     let scale: SIMD2<Float>
     if sourceAspect > drawableAspect {
@@ -498,7 +521,8 @@ final class FrameRenderer: @unchecked Sendable {
     let uniforms = VideoUniforms(
       scale: scale,
       sourceMin: SIMD2(normalizedMinX, normalizedTopY),
-      sourceMax: SIMD2(normalizedMaxX, normalizedBottomY)
+      sourceMax: SIMD2(normalizedMaxX, normalizedBottomY),
+      rotation: UInt32(rotation.rawValue)
     )
     let resources = DrawResources(
       pixelBuffer: frame.pixelBuffer,

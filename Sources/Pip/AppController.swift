@@ -7,6 +7,8 @@ final class AppController: NSObject, NSApplicationDelegate {
   private var panelController: FloatingPanelController?
   private var captureSession: CaptureSession?
   private var statusItem: NSStatusItem?
+  private var rotateMenuItem: NSMenuItem?
+  private var rotation: VideoRotation = .none
   private var terminationTask: Task<Void, Never>?
   private var isTerminating = false
   private var terminationReplySent = false
@@ -132,6 +134,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         action: #selector(showPanelFromMenu(_:)),
         identifier: "pip.menu.show-panel"
       ))
+    let rotateItem = makeMenuItem(
+      title: Self.rotateMenuTitle(for: rotation),
+      action: #selector(rotateFromMenu(_:)),
+      identifier: "pip.menu.rotate"
+    )
+    menu.addItem(rotateItem)
+    rotateMenuItem = rotateItem
     menu.addItem(.separator())
     menu.addItem(
       makeMenuItem(
@@ -158,6 +167,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     return item
   }
 
+  private static func rotateMenuTitle(for rotation: VideoRotation) -> String {
+    "화면 회전 (현재 \(rotation.degrees)°)"
+  }
+
   @objc private func chooseWindowFromMenu(_ sender: Any?) {
     chooseWindow()
   }
@@ -165,6 +178,22 @@ final class AppController: NSObject, NSApplicationDelegate {
   @objc private func showPanelFromMenu(_ sender: Any?) {
     guard !isTerminating else { return }
     panelController?.show()
+  }
+
+  // Rotation is display-only and session-scoped: it is not persisted and
+  // survives choosing another window.
+  @objc private func rotateFromMenu(_ sender: Any?) {
+    guard !isTerminating else { return }
+    let next = rotation.next
+    if next.swapsDimensions != rotation.swapsDimensions {
+      panelController?.swapVideoOrientation()
+    }
+    rotation = next
+    renderer?.setRotation(next)
+
+    let title = Self.rotateMenuTitle(for: next)
+    rotateMenuItem?.title = title
+    rotateMenuItem?.setAccessibilityLabel(title)
   }
 
   @objc private func stopCaptureFromMenu(_ sender: Any?) {
