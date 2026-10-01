@@ -14,6 +14,7 @@ ScreenCaptureKit으로 창을 캡처하고 Metal로 렌더링합니다.
 - PiP 창은 항상 위에 표시되며, 모든 데스크톱(Spaces)과 전체 화면 앱 위에서도 유지
 - 메뉴 막대 전용 앱(Dock 아이콘 없음)
 - 최대 30fps, 원본 비율 유지, 커서 미표시
+- 메뉴 막대에서 PiP 화면을 90°씩 회전(표시 전용)
 - 캡처한 화면은 저장하거나 네트워크로 전송하지 않음
 
 지원하지 않는 것: 오디오 캡처, PiP 창에서 원본 창으로의 클릭/키 입력 전달.
@@ -68,6 +69,7 @@ brew uninstall --cask pip
 | --- | --- |
 | 창 선택 | 시스템 창 선택기를 열어 캡처할 창을 선택/변경 |
 | PiP 보이기 | 닫았거나 가려진 PiP 창을 다시 표시 |
+| 화면 회전 | 누를 때마다 PiP 화면을 시계 방향으로 90° 회전(항목에 현재 각도 표시), PiP 창의 화면 영역 가로·세로가 바뀜. 앱을 다시 실행하면 초기화 |
 | 중지 | 캡처 중지 |
 | 종료 | 앱 종료 |
 
@@ -96,6 +98,7 @@ Sources/Pip/
 ├── CaptureSession.swift           # ScreenCaptureKit 선택기·스트림 관리, 복구
 ├── FrameRenderer.swift            # Metal 렌더러
 ├── CaptureFrame.swift / CaptureState.swift
+├── VideoRotation.swift            # 화면 회전 상태(0/90/180/270°)
 └── Resources/Video.metal          # 셰이더
 Resources/Info.plist               # 앱 번들 Info.plist
 Resources/AppIcon.icns             # 앱 아이콘(생성물)

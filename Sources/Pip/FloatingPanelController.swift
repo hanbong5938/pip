@@ -27,6 +27,7 @@ final class FloatingPanelController: NSObject {
 
   private let panel: PiPPanel
   private let videoView: NSView
+  private let videoContainer: PassiveContainerView
   private let statusLabel: NSTextField
   private let chooseWindowButton: NSButton
   private let closeButton: NSButton
@@ -34,6 +35,7 @@ final class FloatingPanelController: NSObject {
 
   init(videoView: NSView) {
     self.videoView = videoView
+    self.videoContainer = PassiveContainerView()
 
     let initialFrame = Self.initialFrame()
     self.panel = PiPPanel(
@@ -80,6 +82,35 @@ final class FloatingPanelController: NSObject {
     // Do not activate the application or make this panel key. A
     // nonactivating panel can still deliver clicks to its buttons.
     panel.orderFront(nil)
+    requestVideoRedraw()
+  }
+
+  /// Exchanges the width and height of the video area for a 90°/270° display
+  /// rotation, keeping the panel's chrome, center, and on-screen placement.
+  /// Works while the panel is hidden; only the frame is updated then.
+  func swapVideoOrientation() {
+    panel.layoutIfNeeded()
+
+    let currentFrame = panel.frame
+    let videoSize = videoContainer.frame.size
+    let chromeWidth = currentFrame.width - videoSize.width
+    let chromeHeight = currentFrame.height - videoSize.height
+    let size = NSSize(
+      width: max(chromeWidth + videoSize.height, panel.minSize.width),
+      height: max(chromeHeight + videoSize.width, panel.minSize.height)
+    )
+
+    var frame = NSRect(
+      x: currentFrame.midX - size.width / 2,
+      y: currentFrame.midY - size.height / 2,
+      width: size.width,
+      height: size.height
+    )
+    if let screen = Self.hostScreen(for: frame) {
+      frame = Self.constrainedFrame(frame, to: screen.visibleFrame)
+    }
+
+    panel.setFrame(frame, display: panel.isVisible, animate: false)
     requestVideoRedraw()
   }
 
@@ -138,7 +169,6 @@ final class FloatingPanelController: NSObject {
     panel.contentView = rootView
     rootView.setAccessibilityIdentifier("pip.content")
 
-    let videoContainer = PassiveContainerView()
     videoContainer.wantsLayer = true
     videoContainer.layer?.backgroundColor = NSColor.black.cgColor
     videoContainer.setAccessibilityIdentifier("pip.video.container")
@@ -276,26 +306,23 @@ final class FloatingPanelController: NSObject {
   }
 
   private func repositionIfNeeded() {
-    guard !NSScreen.screens.isEmpty else { return }
-
     let currentFrame = panel.frame
-    guard !currentFrame.isEmpty else { return }
+    guard !currentFrame.isEmpty, let screen = Self.hostScreen(for: currentFrame) else { return }
 
-    if let screen = NSScreen.screens.first(where: { screen in
-      screen.visibleFrame.contains(NSPoint(x: currentFrame.midX, y: currentFrame.midY))
-    }) {
-      let constrained = Self.constrainedFrame(currentFrame, to: screen.visibleFrame)
-      guard constrained != currentFrame else { return }
-      panel.setFrame(constrained, display: panel.isVisible)
-      return
-    }
-
-    // The screen containing the panel may have disappeared. Re-home it
-    // on the primary visible display without changing its size unless the
-    // new visible frame cannot accommodate that size.
-    let destination = NSScreen.main ?? NSScreen.screens[0]
-    let constrained = Self.constrainedFrame(currentFrame, to: destination.visibleFrame)
+    let constrained = Self.constrainedFrame(currentFrame, to: screen.visibleFrame)
+    guard constrained != currentFrame else { return }
     panel.setFrame(constrained, display: panel.isVisible)
+  }
+
+  /// The screen whose visible frame contains the midpoint of `frame`. If that
+  /// screen has disappeared, re-home on the primary visible display; the
+  /// caller's constrainedFrame keeps the size unless it cannot fit there.
+  private static func hostScreen(for frame: NSRect) -> NSScreen? {
+    let midpoint = NSPoint(x: frame.midX, y: frame.midY)
+    if let screen = NSScreen.screens.first(where: { $0.visibleFrame.contains(midpoint) }) {
+      return screen
+    }
+    return NSScreen.main ?? NSScreen.screens.first
   }
 
   private static func initialFrame() -> NSRect {
