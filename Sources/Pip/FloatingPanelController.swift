@@ -1085,16 +1085,16 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
       rejectSizeField(widthField)
       return
     }
-    guard let height = validatedSizeValue(of: heightField) else {
-      rejectSizeField(heightField)
-      return
-    }
 
     let videoWidth = CGFloat(width)
     let video: NSSize
     if let displayAspect {
       video = NSSize(width: videoWidth, height: videoWidth / displayAspect)
     } else {
+      guard let height = validatedSizeValue(of: heightField) else {
+        rejectSizeField(heightField)
+        return
+      }
       video = NSSize(width: videoWidth, height: CGFloat(height))
     }
     setFrameAnchoringTopLeft(size: fittedFrameSize(forVideoSize: video))
@@ -1304,15 +1304,35 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     )
   }
 
-  /// The screen whose visible frame contains the midpoint of `frame`. If that
-  /// screen has disappeared, re-home on the primary visible display; the
-  /// caller's constrainedFrame keeps the size unless it cannot fit there.
+  /// The screen hosting `frame`: the one whose visible frame contains its
+  /// midpoint, else the one whose full frame contains it (over the Dock or
+  /// menu bar), else the one with the largest overlap. Only a panel that
+  /// overlaps no display re-homes on the primary display; the caller's
+  /// constrainedFrame keeps the size unless it cannot fit there.
   private static func hostScreen(for frame: NSRect) -> NSScreen? {
     let midpoint = NSPoint(x: frame.midX, y: frame.midY)
-    if let screen = NSScreen.screens.first(where: { $0.visibleFrame.contains(midpoint) }) {
+    let screens = NSScreen.screens
+    if let screen = screens.first(where: { $0.visibleFrame.contains(midpoint) }) {
       return screen
     }
-    return NSScreen.main ?? NSScreen.screens.first
+    // Over the Dock or menu bar strip, or partly off-screen, the panel still
+    // belongs to the display it overlaps.
+    if let screen = screens.first(where: { $0.frame.contains(midpoint) }) {
+      return screen
+    }
+    var best: (screen: NSScreen, area: CGFloat)?
+    for screen in screens {
+      let overlap = screen.frame.intersection(frame)
+      guard !overlap.isNull, !overlap.isEmpty else { continue }
+      let area = overlap.width * overlap.height
+      if area > (best?.area ?? 0) {
+        best = (screen, area)
+      }
+    }
+    if let best {
+      return best.screen
+    }
+    return NSScreen.main ?? screens.first
   }
 
   private static func initialFrame() -> NSRect {

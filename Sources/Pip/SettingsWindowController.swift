@@ -59,6 +59,9 @@ private final class SettingsModel {
   private(set) var clickThroughHotKeyEnabled = true
 
   @ObservationIgnored private let settings: AppSettings
+  /// Login item status when `loginItemError` was recorded; the error is
+  /// cleared once the live status moves away from it.
+  @ObservationIgnored private var loginItemErrorStatus: (enabled: Bool, requiresApproval: Bool)?
 
   init(settings: AppSettings) {
     self.settings = settings
@@ -66,8 +69,16 @@ private final class SettingsModel {
   }
 
   func reload() {
-    launchAtLogin = LoginItem.isEnabled || LoginItem.requiresApproval
-    loginItemRequiresApproval = LoginItem.requiresApproval
+    let newLaunchAtLogin = LoginItem.isEnabled || LoginItem.requiresApproval
+    let newRequiresApproval = LoginItem.requiresApproval
+    if let status = loginItemErrorStatus,
+      status.enabled != newLaunchAtLogin || status.requiresApproval != newRequiresApproval
+    {
+      loginItemError = nil
+      loginItemErrorStatus = nil
+    }
+    launchAtLogin = newLaunchAtLogin
+    loginItemRequiresApproval = newRequiresApproval
     autoCloseOnSourceClose = settings.autoCloseOnSourceClose
     defaultFrameRate = settings.defaultFrameRate
     defaultOpacity = settings.defaultOpacity
@@ -83,6 +94,7 @@ private final class SettingsModel {
     }
     launchAtLogin = LoginItem.isEnabled || LoginItem.requiresApproval
     loginItemRequiresApproval = LoginItem.requiresApproval
+    loginItemErrorStatus = loginItemError == nil ? nil : (launchAtLogin, loginItemRequiresApproval)
   }
 
   func setAutoCloseOnSourceClose(_ enabled: Bool) {

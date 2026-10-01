@@ -176,6 +176,9 @@ final class CaptureSession {
 
   func stop() async {
     if let stopTask {
+      // A later stop supersedes a restart queued behind the in-flight one.
+      startRequestedAfterStop = nil
+      selectionRequestedAfterStop = false
       await stopTask.value
       return
     }
@@ -213,7 +216,11 @@ final class CaptureSession {
       await stop(context, intentionally: true)
     }
     currentStream = nil
-    publish(.stopped(L10n.string("capture.stopped")))
+    // A queued start() publishes `.starting` itself; an intermediate `.stopped`
+    // would make observers drop state tied to that restart.
+    if startRequestedAfterStop == nil {
+      publish(.stopped(L10n.string("capture.stopped")))
+    }
     stopTask = nil
     updatePickerActivation()
 
@@ -398,15 +405,14 @@ final class CaptureSession {
   }
 
   private func handleSystemActive(transitionID: UInt64) {
-    guard !userStopped,
-      let context = currentStream,
-      !context.stopSignaled,
-      workspaceTransitionBox.isCurrent(transitionID),
+    guard workspaceTransitionBox.isCurrent(transitionID),
       transitionID > lastWorkspaceTransitionID
     else { return }
     lastWorkspaceTransitionID = transitionID
     frameGate.resumeWorkspace()
     workspaceInactive = false
+
+    guard !userStopped, let context = currentStream, !context.stopSignaled else { return }
     frameGate.resume(context.generation, for: .workspace)
     if frameSuspended && !frameGate.hasFrameSuspension(context.generation) {
       frameSuspended = false
@@ -439,7 +445,9 @@ final class CaptureSession {
     let previousState = stateBeforeSelection
     stateBeforeSelection = nil
     if let previousState,
-      Self.canRestoreSelectionState(previousState, currentStream: currentStream)
+      Self.canRestoreSelectionState(
+        previousState, currentStream: currentStream,
+        replacementInFlight: replacementTask != nil)
     {
       publish(previousState)
     } else if let currentStream,
@@ -465,7 +473,9 @@ final class CaptureSession {
     let previousState = stateBeforeSelection
     stateBeforeSelection = nil
     if let previousState,
-      Self.canRestoreSelectionState(previousState, currentStream: currentStream)
+      Self.canRestoreSelectionState(
+        previousState, currentStream: currentStream,
+        replacementInFlight: replacementTask != nil)
     {
       publish(previousState)
     } else if let currentStream,
@@ -511,7 +521,9 @@ final class CaptureSession {
       let previousState = stateBeforeSelection
       stateBeforeSelection = nil
       if let previousState,
-        Self.canRestoreSelectionState(previousState, currentStream: currentStream)
+        Self.canRestoreSelectionState(
+          previousState, currentStream: currentStream,
+          replacementInFlight: replacementTask != nil)
       {
         publish(previousState)
       } else {
@@ -1110,14 +1122,20 @@ final class CaptureSession {
     !userStopped && operation == operationID
   }
 
+  /// A `.starting` snapshot taken while a replacement was in flight is stale
+  /// once that replacement has published its terminal state; `replacementTask`
+  /// is cleared in `drainPendingSources`' defer with no await after that publish.
   private static func canRestoreSelectionState(
     _ previousState: CaptureState,
-    currentStream: StreamContext?
+    currentStream: StreamContext?,
+    replacementInFlight: Bool
   ) -> Bool {
     guard currentStream?.stopSignaled != true else { return false }
     switch previousState {
-    case .running, .suspended, .starting:
+    case .running, .suspended:
       return currentStream != nil
+    case .starting:
+      return replacementInFlight
     case .idle, .selecting, .stopped, .failed:
       return true
     }

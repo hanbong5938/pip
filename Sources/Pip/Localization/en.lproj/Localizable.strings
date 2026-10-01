@@ -14,6 +14,14 @@
 /* Renderer */
 "renderer.unavailable" = "Unable to start the renderer.";
 "renderer.error" = "Renderer error: %@";
+"renderer.error.noMetalDevice" = "Metal device is unavailable.";
+"renderer.error.commandQueueUnavailable" = "Metal command queue could not be created.";
+"renderer.error.textureCacheUnavailable" = "Core Video texture cache could not be created (%d).";
+"renderer.error.shaderResourceUnavailable" = "Video shader resource is unavailable.";
+"renderer.error.shaderSourceUnavailable" = "Video shader source could not be read.";
+"renderer.error.shaderCompilationFailed" = "Video shader compilation failed: %@";
+"renderer.error.pipelineUnavailable" = "Metal render pipeline could not be created.";
+"renderer.error.samplerUnavailable" = "Metal sampler could not be created.";
 
 /* Floating panel */
 "panel.accessibilityLabel" = "Picture in Picture";
