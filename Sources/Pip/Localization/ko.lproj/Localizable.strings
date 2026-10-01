@@ -1,0 +1,106 @@
+/* Status item menu */
+"menu.accessibilityLabel" = "PiP 메뉴";
+"menu.chooseWindow" = "창 선택";
+"menu.showPanel" = "PiP 보이기";
+"menu.rotate" = "화면 회전 (현재 %d°)";
+"menu.size" = "크기";
+"menu.sizeSmall" = "작게";
+"menu.sizeMedium" = "보통";
+"menu.sizeLarge" = "크게";
+"menu.sizeCustom" = "사용자 지정…";
+"menu.stop" = "중지";
+"menu.quit" = "종료";
+
+/* Renderer */
+"renderer.unavailable" = "렌더러를 시작할 수 없습니다.";
+"renderer.error" = "렌더러 오류: %@";
+
+/* Floating panel */
+"panel.accessibilityLabel" = "화면 속 화면";
+"panel.chooseWindow" = "창 선택";
+"panel.close" = "닫기";
+"panel.apply" = "적용";
+"panel.cancel" = "취소";
+"panel.video" = "실시간 화면";
+"panel.status" = "상태";
+"panel.width" = "너비";
+"panel.height" = "높이";
+
+/* Panel status presentation */
+"state.idle" = "창을 선택하세요";
+"state.selecting" = "창 선택 중…";
+"state.starting" = "시작 중…";
+"state.running" = "실시간: %@";
+"state.paused" = "일시 중지됨";
+"state.pausedReason" = "일시 중지됨: %@";
+"state.stopped" = "중지됨";
+"state.stoppedReason" = "중지됨: %@";
+"state.error" = "오류";
+"state.failedReason" = "실패: %@";
+
+/* Capture session state reasons */
+"capture.untitledWindow" = "창";
+"capture.stopped" = "중지됨";
+"capture.ended" = "캡처가 중지되었습니다";
+"capture.paused" = "캡처가 일시 중지되었습니다";
+"capture.screenUnavailable" = "화면을 사용할 수 없습니다";
+"capture.sessionInactive" = "세션이 비활성 상태입니다";
+"capture.unavailable" = "캡처를 사용할 수 없습니다";
+"capture.pickerUnavailable" = "창 선택기를 사용할 수 없습니다";
+"capture.selectionUnavailable" = "창 선택을 사용할 수 없습니다";
+"capture.sourceClosed" = "원본 창이 닫혔습니다";
+
+"menu.selectRegion" = "영역 선택…";
+"menu.resetRegion" = "영역 초기화";
+"menu.frameRate" = "프레임 레이트";
+"menu.frameRateValue" = "%d fps";
+"menu.opacity" = "불투명도";
+"menu.opacityValue" = "%d%%";
+"menu.clickThrough" = "클릭 통과";
+"menu.settings" = "설정…";
+"menu.loadingWindows" = "불러오는 중…";
+"menu.noWindows" = "사용 가능한 창 없음";
+"menu.windowRegion" = "%@ — 영역 선택";
+"menu.allowScreenRecording" = "화면 기록 허용…";
+"menu.useSystemPicker" = "시스템 선택기 사용…";
+"menu.newPiP" = "새 PiP";
+"menu.closePiP" = "PiP 닫기";
+"menu.closeAll" = "모두 닫기";
+"menu.emptyPiP" = "비어 있음";
+"menu.pipItem" = "%d. %@";
+
+"settings.title" = "설정";
+"settings.launchAtLogin" = "로그인 시 실행";
+"settings.launchAtLoginFailed" = "로그인 항목을 변경할 수 없습니다: %@";
+"settings.loginItemNeedsApproval" = "시스템 설정 › 로그인 항목에서 Pip을 허용해야 합니다.";
+"settings.openLoginItems" = "로그인 항목 열기";
+"settings.section.pip" = "화면 속 화면";
+"settings.autoClose" = "원본 창이 닫히면 PiP 닫기";
+"settings.defaultFrameRate" = "기본 프레임 레이트";
+"settings.defaultOpacity" = "기본 불투명도";
+"settings.section.shortcuts" = "단축키";
+"settings.clickThroughShortcut" = "클릭 통과 전환";
+"settings.version" = "버전 %@";
+
+"panel.crop" = "영역 선택";
+"panel.controls" = "컨트롤";
+"panel.clickThrough" = "클릭 통과 켜짐";
+
+"crop.hint" = "드래그해서 영역을 선택하세요";
+"crop.apply" = "적용";
+"crop.reset" = "전체 창";
+"crop.cancel" = "취소";
+"crop.accessibilityLabel" = "영역 선택";
+
+"windowList.header" = "창";
+"windowList.accessibilityLabel" = "창 목록";
+"windowList.refresh" = "새로 고침";
+"windowList.pickWindow" = "창 보기";
+"windowList.pickRegion" = "영역 선택";
+"windowList.systemPicker" = "시스템 선택기 사용…";
+"windowList.loading" = "창 목록을 불러오는 중…";
+"windowList.empty" = "표시할 창이 없습니다";
+
+"permission.title" = "화면 기록 권한 필요";
+"permission.body" = "여기에 창 목록을 표시하려면 화면 기록을 허용하세요. 권한 없이도 시스템 선택기는 사용할 수 있습니다.";
+"permission.open" = "시스템 설정 열기";

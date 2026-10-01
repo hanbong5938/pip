@@ -15,9 +15,63 @@ private final class PiPPanel: NSPanel {
   }
 }
 
+/// Content view that reports pointer hover over the whole content area. The
+/// tracking area is `.activeAlways`, so hover is reported while the
+/// nonactivating panel is not key and the application is inactive.
 @MainActor
-private final class PassiveContainerView: NSView {
+private final class HoverTrackingView: NSView {
+  var onMouseEntered: (() -> Void)?
+  var onMouseMoved: (() -> Void)?
+  var onMouseExited: (() -> Void)?
+  private var hoverTrackingArea: NSTrackingArea?
+
   override var acceptsFirstResponder: Bool { false }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    guard hoverTrackingArea == nil else { return }
+    // `.inVisibleRect` keeps the area matched to the visible bounds, so it
+    // is installed once and never needs updateTrackingAreas.
+    let area = NSTrackingArea(
+      rect: .zero,
+      options: [.activeAlways, .mouseEnteredAndExited, .mouseMoved, .inVisibleRect],
+      owner: self,
+      userInfo: nil
+    )
+    addTrackingArea(area)
+    hoverTrackingArea = area
+  }
+
+  // Subviews forward their own tracking events up the responder chain;
+  // only this view's area describes the pointer entering or leaving the panel.
+  override func mouseEntered(with event: NSEvent) {
+    guard event.trackingArea === hoverTrackingArea else { return super.mouseEntered(with: event) }
+    onMouseEntered?()
+  }
+
+  override func mouseMoved(with event: NSEvent) {
+    onMouseMoved?()
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    guard event.trackingArea === hoverTrackingArea else { return super.mouseExited(with: event) }
+    onMouseExited?()
+  }
+}
+
+/// Hosts the video view and the views layered over it (source chooser, crop
+/// selection). Reports every layout pass so overlays that depend on the
+/// container size can follow live resizes.
+@MainActor
+private final class VideoContainerView: NSView {
+  var onLayout: (() -> Void)?
+
+  override var acceptsFirstResponder: Bool { false }
+
+  override func layout() {
+    super.layout()
+    onLayout?()
+  }
 }
 
 @MainActor
@@ -25,12 +79,34 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
   var onChooseWindow: (() -> Void)?
   var onClose: (() -> Void)?
   var onVideoPixelSizeChange: ((CGSize) -> Void)?
+  var onPickWindow: ((CGWindowID) -> Void)?
+  var onPickWindowRegion: ((CGWindowID) -> Void)?
+  var onRefreshWindowList: (() -> Void)?
+  var onUseSystemPicker: (() -> Void)?
+  var onRequestPermission: (() -> Void)?
+  /// The overlay crop button was pressed.
+  var onBeginCrop: (() -> Void)?
+  /// A crop selection finished by the user (never fired for
+  /// `cancelCropSelection()` or an automatic end).
+  var onCropSelection: ((CropSelectionView.Result) -> Void)?
+
+  /// Smallest content (video) area. The video fills the content view, so
+  /// this is also the smallest video area.
+  private static let minimumContentSize = NSSize(width: 240, height: 160)
+  private static let overlayFadeInDuration: TimeInterval = 0.15
+  private static let overlayFadeOutDuration: TimeInterval = 0.3
+  private static let overlayHideDelay: Duration = .milliseconds(1500)
 
   private let panel: PiPPanel
+  private let rootView: HoverTrackingView
   private let videoView: NSView
-  private let videoContainer: PassiveContainerView
+  private let videoContainer: VideoContainerView
+  /// Hover HUD floating over the bottom of the video. It is not part of the
+  /// sizing layout: the video always fills the content view.
+  private let overlay: NSVisualEffectView
   private let statusLabel: NSTextField
   private let chooseWindowButton: NSButton
+  private let cropButton: NSButton
   private let closeButton: NSButton
   private let controls: NSStackView
   private let sizeEditor: NSStackView
@@ -38,6 +114,10 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
   private let heightField: NSTextField
   private let applySizeButton: NSButton
   private let cancelSizeButton: NSButton
+  private let clickThroughBadge: NSVisualEffectView
+  private var windowListView: WindowListView?
+  private var cropView: CropSelectionView?
+  private weak var responderBeforeCrop: NSResponder?
   private var closeCallbackDelivered = false
   /// Unclamped video-area size and panel center requested by the last
   /// rotation swap, paired with the frame that swap produced. The size stays
@@ -51,10 +131,30 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
   private var lastEmittedVideoPixelSize: CGSize?
   private var isEditingSize = false
   private var isSyncingSizeFields = false
+  /// True while the last published state is `.running` or `.suspended`.
+  private var isCapturing = false
+  private var isClickThrough = false
+  private var isPointerInside = false
+  /// Target visibility of the overlay (its alpha may still be animating).
+  private var isOverlayShown = true
+  /// Bumped on every overlay visibility change so a stale fade-out
+  /// completion cannot hide an overlay that was shown again meanwhile.
+  private var overlayGeneration = 0
+  private var overlayHideTask: Task<Void, Never>?
+  /// Frame autosave name; each simultaneous PiP needs its own.
+  private let autosaveName: String
+  /// Whether a frame was saved under `autosaveName` before this panel
+  /// existed; such a panel keeps its remembered frame instead of cascading.
+  private let hasSavedFrame: Bool
 
-  init(videoView: NSView) {
+  init(videoView: NSView, autosaveName: String = "pip.panel") {
+    self.autosaveName = autosaveName
+    self.hasSavedFrame =
+      UserDefaults.standard.object(forKey: "NSWindow Frame \(autosaveName)") != nil
     self.videoView = videoView
-    self.videoContainer = PassiveContainerView()
+    self.rootView = HoverTrackingView()
+    self.videoContainer = VideoContainerView()
+    self.overlay = NSVisualEffectView()
 
     let initialFrame = Self.initialFrame()
     self.panel = PiPPanel(
@@ -63,15 +163,17 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
       backing: .buffered,
       defer: true
     )
-    self.statusLabel = NSTextField(labelWithString: "창을 선택하세요")
-    self.chooseWindowButton = NSButton(title: "창 선택", target: nil, action: nil)
-    self.closeButton = NSButton(title: "닫기", target: nil, action: nil)
+    self.statusLabel = NSTextField(labelWithString: L10n.string("state.idle"))
+    self.chooseWindowButton = NSButton(frame: .zero)
+    self.cropButton = NSButton(frame: .zero)
+    self.closeButton = NSButton(frame: .zero)
     self.controls = NSStackView()
     self.sizeEditor = NSStackView()
     self.widthField = NSTextField(string: "")
     self.heightField = NSTextField(string: "")
-    self.applySizeButton = NSButton(title: "적용", target: nil, action: nil)
-    self.cancelSizeButton = NSButton(title: "취소", target: nil, action: nil)
+    self.applySizeButton = NSButton(frame: .zero)
+    self.cancelSizeButton = NSButton(frame: .zero)
+    self.clickThroughBadge = NSVisualEffectView()
 
     super.init()
 
@@ -110,6 +212,35 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     requestVideoRedraw()
   }
 
+  /// Hides the panel through the same once-only path as the close buttons.
+  func close() {
+    requestClose()
+  }
+
+  /// Current panel frame in screen coordinates.
+  var frame: NSRect {
+    panel.frame
+  }
+
+  /// Places the panel with its top-right corner 24pt down-left of `frame`'s,
+  /// keeping its own size, constrained to the screen hosting `frame`. No-op
+  /// when this panel restored a saved frame.
+  func cascade(from frame: NSRect) {
+    guard !hasSavedFrame, !frame.isEmpty else { return }
+    let size = panel.frame.size
+    var cascaded = NSRect(
+      x: frame.maxX - 24 - size.width,
+      y: frame.maxY - 24 - size.height,
+      width: size.width,
+      height: size.height
+    )
+    if let screen = Self.hostScreen(for: frame) {
+      cascaded = Self.constrainedFrame(cascaded, to: screen.visibleFrame)
+    }
+    panel.setFrame(cascaded, display: panel.isVisible)
+    emitVideoPixelSizeIfChanged()
+  }
+
   /// Exchanges the width and height of the video area for a 90°/270° display
   /// rotation, keeping the panel's chrome, center, and on-screen placement.
   /// The requested size is remembered before the minSize clamp so that
@@ -117,6 +248,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
   /// Works while the panel is hidden; only the frame is updated then.
   func swapVideoOrientation() {
     isOrientationSwapped.toggle()
+    updateCropContentRect()
     panel.layoutIfNeeded()
 
     let currentFrame = panel.frame
@@ -174,16 +306,33 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     default:
       chooseWindowButton.isEnabled = true
     }
+
+    switch state {
+    case .running, .suspended:
+      isCapturing = true
+    default:
+      isCapturing = false
+    }
+    cropButton.isEnabled = isCapturing
+    if !isCapturing {
+      cancelCropSelection()
+    }
+    refreshOverlay(animated: true)
   }
 
-  /// Shows the panel and replaces the bottom controls row with an inline
+  /// Shows the panel and replaces the overlay's button row with an inline
   /// width × height editor for the video area, in points. Only the panel
-  /// becomes key; the application is never activated.
+  /// becomes key; the application is never activated. Ignored while
+  /// click-through is on, since the panel cannot receive clicks then.
   func beginCustomSizeEditing() {
+    guard !isClickThrough else { return }
+    cancelCropSelection()
     show()
     isEditingSize = true
     controls.isHidden = true
     sizeEditor.isHidden = false
+    // Unhides the overlay synchronously: hidden fields cannot take focus.
+    refreshOverlay(animated: false)
     fillSizeFields()
     panel.makeKey()
     panel.makeFirstResponder(widthField)
@@ -216,6 +365,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
       size.width > 0, size.height > 0
     else {
       sourceAspect = nil
+      updateCropContentRect()
       return
     }
 
@@ -227,6 +377,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
       return
     }
     sourceAspect = aspect
+    updateCropContentRect()
     if isEditingSize {
       syncHeightFromWidthField()
     }
@@ -260,6 +411,251 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
 
     let video = NSSize(width: videoWidth, height: videoWidth / aspect)
     setFrameAnchoringTopLeft(size: fittedFrameSize(forVideoSize: video))
+  }
+
+  // MARK: - Source chooser
+
+  /// Shows the in-app window list over the video area (`content` non-nil)
+  /// or removes it (`nil`, e.g. once a capture is running). While the list
+  /// is shown the overlay carries the status only.
+  func setSourceChooser(_ content: WindowListView.Content?) {
+    guard let content else {
+      guard let windowListView else { return }
+      windowListView.removeFromSuperview()
+      self.windowListView = nil
+      updateOverlayControls()
+      refreshOverlay(animated: true)
+      return
+    }
+
+    cancelCropSelection()
+    let listView = windowListView ?? makeWindowListView()
+    listView.setContent(content)
+    updateOverlayControls()
+    refreshOverlay(animated: true)
+  }
+
+  private func makeWindowListView() -> WindowListView {
+    let listView = WindowListView(frame: videoContainer.bounds)
+    listView.translatesAutoresizingMaskIntoConstraints = false
+    listView.onPick = { [weak self] windowID in self?.onPickWindow?(windowID) }
+    listView.onPickRegion = { [weak self] windowID in self?.onPickWindowRegion?(windowID) }
+    listView.onRefresh = { [weak self] in self?.onRefreshWindowList?() }
+    listView.onUseSystemPicker = { [weak self] in self?.onUseSystemPicker?() }
+    listView.onRequestPermission = { [weak self] in self?.onRequestPermission?() }
+    // Above the video, below a crop selection.
+    videoContainer.addSubview(listView, positioned: .above, relativeTo: videoView)
+    pinToVideoContainer(listView)
+    windowListView = listView
+    return listView
+  }
+
+  // MARK: - Opacity and click-through
+
+  /// Sets the whole panel's opacity, clamped to `AppSettings.opacityRange`;
+  /// non-finite input means fully opaque.
+  func setOpacity(_ value: Double) {
+    let range = AppSettings.opacityRange
+    let clamped = value.isFinite ? min(max(value, range.lowerBound), range.upperBound) : range.upperBound
+    panel.alphaValue = CGFloat(clamped)
+  }
+
+  /// While enabled the panel ignores the mouse entirely: size editing and
+  /// crop selection end, the hover overlay is suppressed, and a small badge
+  /// marks the mode.
+  func setClickThrough(_ enabled: Bool) {
+    guard enabled != isClickThrough else { return }
+    isClickThrough = enabled
+    if enabled {
+      endSizeEditing()
+      cancelCropSelection()
+      isPointerInside = false
+    }
+    panel.ignoresMouseEvents = enabled
+    clickThroughBadge.isHidden = !enabled
+    refreshOverlay(animated: false)
+  }
+
+  // MARK: - Crop selection
+
+  var isCropping: Bool { cropView != nil }
+
+  /// Overlays a crop selection on the displayed video. Only the panel
+  /// becomes key; the application is never activated. Ignored unless a
+  /// capture is running or suspended and click-through is off.
+  func beginCropSelection() {
+    guard isCapturing, !isClickThrough else { return }
+    if let cropView {
+      cropView.begin()
+      panel.makeKey()
+      panel.makeFirstResponder(cropView)
+      return
+    }
+
+    endSizeEditing()
+    if !panel.isVisible {
+      show()
+    }
+
+    let selection = CropSelectionView(frame: videoContainer.bounds)
+    selection.translatesAutoresizingMaskIntoConstraints = false
+    selection.onFinish = { [weak self, weak selection] result in
+      guard let self, let selection else { return }
+      self.finishCropSelection(from: selection, result: result)
+    }
+    videoContainer.addSubview(selection)
+    pinToVideoContainer(selection)
+    responderBeforeCrop = panel.firstResponder
+    cropView = selection
+    // A background drag must draw the selection, not move the panel.
+    panel.isMovableByWindowBackground = false
+    videoContainer.layoutSubtreeIfNeeded()
+    updateCropContentRect()
+    // The overlay would cover the bottom of the video while selecting.
+    refreshOverlay(animated: false)
+
+    selection.begin()
+    panel.makeKey()
+    panel.makeFirstResponder(selection)
+  }
+
+  /// Removes an active crop selection without reporting a result.
+  func cancelCropSelection() {
+    dismissCropSelection()
+  }
+
+  private func finishCropSelection(from selection: CropSelectionView, result: CropSelectionView.Result) {
+    guard selection === cropView else { return }
+    dismissCropSelection()
+    onCropSelection?(result)
+  }
+
+  private func dismissCropSelection() {
+    guard let selection = cropView else { return }
+    cropView = nil
+    selection.onFinish = nil
+    let previousResponder = responderBeforeCrop
+    responderBeforeCrop = nil
+    selection.removeFromSuperview()
+    panel.isMovableByWindowBackground = true
+
+    if let previousResponder,
+      previousResponder === panel || (previousResponder as? NSView)?.window === panel
+    {
+      panel.makeFirstResponder(previousResponder)
+    } else {
+      panel.makeFirstResponder(nil)
+    }
+    refreshOverlay(animated: true)
+  }
+
+  /// Keeps the selectable area on the letterboxed video: the renderer draws
+  /// a centered aspect fit of the displayed aspect into the container.
+  private func updateCropContentRect() {
+    guard let cropView else { return }
+    let rect = Self.aspectFitRect(aspect: displayAspect, in: cropView.bounds)
+    if cropView.contentRect != rect {
+      cropView.contentRect = rect
+    }
+  }
+
+  private func pinToVideoContainer(_ view: NSView) {
+    NSLayoutConstraint.activate([
+      view.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
+      view.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
+      view.topAnchor.constraint(equalTo: videoContainer.topAnchor),
+      view.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
+    ])
+  }
+
+  // MARK: - Hover overlay
+
+  /// The overlay is suppressed during click-through and crop selection. It
+  /// is pinned visible while no capture is running, while the size editor or
+  /// source chooser is open, and while VoiceOver runs (so its controls stay
+  /// reachable). Otherwise it follows the pointer and fades out
+  /// `overlayHideDelay` after the pointer leaves.
+  private func refreshOverlay(animated: Bool) {
+    if isClickThrough || cropView != nil {
+      cancelOverlayHide()
+      setOverlayShown(false, animated: false)
+      return
+    }
+
+    let isPinned =
+      !isCapturing || isEditingSize || windowListView != nil
+      || NSWorkspace.shared.isVoiceOverEnabled
+    if isPinned || isPointerInside {
+      cancelOverlayHide()
+      setOverlayShown(true, animated: animated)
+    } else {
+      scheduleOverlayHide()
+    }
+  }
+
+  /// With the source chooser up the overlay is a status line only; the list
+  /// itself offers every source action.
+  private func updateOverlayControls() {
+    let showsButtons = windowListView == nil
+    chooseWindowButton.isHidden = !showsButtons
+    cropButton.isHidden = !showsButtons
+    closeButton.isHidden = !showsButtons
+  }
+
+  private func pointerDidEnterOrMove() {
+    guard !isClickThrough else { return }
+    isPointerInside = true
+    refreshOverlay(animated: true)
+  }
+
+  private func pointerDidExit() {
+    isPointerInside = false
+    refreshOverlay(animated: true)
+  }
+
+  private func scheduleOverlayHide() {
+    guard isOverlayShown, overlayHideTask == nil else { return }
+    overlayHideTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: Self.overlayHideDelay)
+      guard !Task.isCancelled, let self else { return }
+      self.overlayHideTask = nil
+      self.setOverlayShown(false, animated: true)
+    }
+  }
+
+  private func cancelOverlayHide() {
+    overlayHideTask?.cancel()
+    overlayHideTask = nil
+  }
+
+  /// Fades the overlay; a hidden overlay is also `isHidden` so it neither
+  /// takes clicks nor appears in the accessibility tree.
+  private func setOverlayShown(_ shown: Bool, animated: Bool) {
+    guard shown != isOverlayShown else { return }
+    isOverlayShown = shown
+    overlayGeneration &+= 1
+    let generation = overlayGeneration
+
+    if shown {
+      overlay.isHidden = false
+    }
+    let duration =
+      animated ? (shown ? Self.overlayFadeInDuration : Self.overlayFadeOutDuration) : 0
+    NSAnimationContext.runAnimationGroup(
+      { context in
+        context.duration = duration
+        self.overlay.animator().alphaValue = shown ? 1 : 0
+      },
+      completionHandler: { [weak self] in
+        MainActor.assumeIsolated {
+          guard let self, !shown, self.overlayGeneration == generation else { return }
+          self.overlay.isHidden = true
+        }
+      }
+    )
+    if !shown && !animated {
+      overlay.isHidden = true
+    }
   }
 
   // MARK: - NSWindowDelegate
@@ -349,13 +745,15 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     panel.hasShadow = true
     panel.backgroundColor = .windowBackgroundColor
     panel.isOpaque = true
-    panel.minSize = NSSize(width: 320, height: 220)
+    panel.minSize = panel.frameRect(
+      forContentRect: NSRect(origin: .zero, size: Self.minimumContentSize)
+    ).size
     // Restores a saved frame (if any) immediately; initialFrame() covers
     // the first launch. show() re-homes frames from disconnected screens.
-    _ = panel.setFrameAutosaveName("pip.panel")
+    _ = panel.setFrameAutosaveName(autosaveName)
     panel.delegate = self
     panel.setAccessibilityIdentifier("pip.panel")
-    panel.setAccessibilityLabel("화면 속 화면")
+    panel.setAccessibilityLabel(L10n.string("panel.accessibilityLabel"))
 
     panel.onCloseRequested = { [weak self] in
       self?.requestClose()
@@ -367,144 +765,245 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
       standardClose.target = self
       standardClose.action = #selector(closeButtonPressed(_:))
       standardClose.setAccessibilityIdentifier("pip.titlebar.close")
-      standardClose.setAccessibilityLabel("닫기")
+      standardClose.setAccessibilityLabel(L10n.string("panel.close"))
     }
   }
 
   private func configureContent() {
-    let rootView = PassiveContainerView()
     panel.contentView = rootView
+    rootView.wantsLayer = true
     rootView.setAccessibilityIdentifier("pip.content")
+    rootView.onMouseEntered = { [weak self] in self?.pointerDidEnterOrMove() }
+    rootView.onMouseMoved = { [weak self] in self?.pointerDidEnterOrMove() }
+    rootView.onMouseExited = { [weak self] in self?.pointerDidExit() }
 
+    videoContainer.translatesAutoresizingMaskIntoConstraints = false
     videoContainer.wantsLayer = true
     videoContainer.layer?.backgroundColor = NSColor.black.cgColor
     videoContainer.setAccessibilityIdentifier("pip.video.container")
-    videoContainer.setAccessibilityLabel("실시간 화면")
+    videoContainer.setAccessibilityLabel(L10n.string("panel.video"))
+    videoContainer.onLayout = { [weak self] in self?.updateCropContentRect() }
 
     videoView.translatesAutoresizingMaskIntoConstraints = false
     videoView.setAccessibilityIdentifier("pip.video")
-    videoView.setAccessibilityLabel("실시간 화면")
+    videoView.setAccessibilityLabel(L10n.string("panel.video"))
     videoContainer.addSubview(videoView)
-
-    NSLayoutConstraint.activate([
-      videoView.leadingAnchor.constraint(equalTo: videoContainer.leadingAnchor),
-      videoView.trailingAnchor.constraint(equalTo: videoContainer.trailingAnchor),
-      videoView.topAnchor.constraint(equalTo: videoContainer.topAnchor),
-      videoView.bottomAnchor.constraint(equalTo: videoContainer.bottomAnchor),
-    ])
+    pinToVideoContainer(videoView)
 
     statusLabel.translatesAutoresizingMaskIntoConstraints = false
+    statusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    statusLabel.textColor = .labelColor
     statusLabel.alignment = .left
     statusLabel.lineBreakMode = .byTruncatingTail
     statusLabel.maximumNumberOfLines = 1
     statusLabel.isSelectable = false
     statusLabel.isEditable = false
     statusLabel.setAccessibilityIdentifier("pip.status")
-    statusLabel.setAccessibilityLabel("상태")
-    statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+    statusLabel.setAccessibilityLabel(L10n.string("panel.status"))
+    // Never wider than its text; the first thing to truncate when the
+    // overlay runs out of room.
+    statusLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
     statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-    chooseWindowButton.translatesAutoresizingMaskIntoConstraints = false
-    chooseWindowButton.bezelStyle = .rounded
-    chooseWindowButton.setAccessibilityIdentifier("pip.chooseWindow")
-    chooseWindowButton.setAccessibilityLabel("창 선택")
-    chooseWindowButton.focusRingType = .none
-    chooseWindowButton.target = self
-    chooseWindowButton.action = #selector(chooseWindowButtonPressed(_:))
+    configureIconButton(
+      chooseWindowButton,
+      symbol: "macwindow",
+      label: L10n.string("panel.chooseWindow"),
+      identifier: "pip.chooseWindow",
+      action: #selector(chooseWindowButtonPressed(_:))
+    )
+    configureIconButton(
+      cropButton,
+      symbol: "crop",
+      label: L10n.string("panel.crop"),
+      identifier: "pip.crop",
+      action: #selector(cropButtonPressed(_:))
+    )
+    cropButton.isEnabled = false
+    configureIconButton(
+      closeButton,
+      symbol: "xmark",
+      label: L10n.string("panel.close"),
+      identifier: "pip.close",
+      action: #selector(closeButtonPressed(_:))
+    )
 
-    closeButton.translatesAutoresizingMaskIntoConstraints = false
-    closeButton.bezelStyle = .rounded
-    closeButton.setAccessibilityIdentifier("pip.close")
-    closeButton.setAccessibilityLabel("닫기")
-    closeButton.focusRingType = .none
-    closeButton.target = self
-    closeButton.action = #selector(closeButtonPressed(_:))
-
-    for view in [statusLabel, chooseWindowButton, closeButton] {
+    for view in [statusLabel, chooseWindowButton, cropButton, closeButton] {
       controls.addArrangedSubview(view)
     }
     controls.translatesAutoresizingMaskIntoConstraints = false
     controls.orientation = .horizontal
     controls.alignment = .centerY
     controls.distribution = .fill
-    controls.spacing = 8
+    controls.spacing = 6
+    controls.setCustomSpacing(10, after: statusLabel)
     controls.setAccessibilityIdentifier("pip.controls")
 
-    configureSizeField(widthField, identifier: "pip.size.width", label: "너비")
-    configureSizeField(heightField, identifier: "pip.size.height", label: "높이")
+    configureSizeField(
+      widthField, identifier: "pip.size.width", label: L10n.string("panel.width"))
+    configureSizeField(
+      heightField, identifier: "pip.size.height", label: L10n.string("panel.height"))
 
     let timesLabel = NSTextField(labelWithString: "×")
     timesLabel.translatesAutoresizingMaskIntoConstraints = false
+    timesLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    timesLabel.textColor = .secondaryLabelColor
     timesLabel.setAccessibilityElement(false)
 
-    applySizeButton.translatesAutoresizingMaskIntoConstraints = false
-    applySizeButton.bezelStyle = .rounded
-    applySizeButton.keyEquivalent = "\r"
-    applySizeButton.setAccessibilityIdentifier("pip.size.apply")
-    applySizeButton.setAccessibilityLabel("적용")
-    applySizeButton.focusRingType = .none
-    applySizeButton.target = self
-    applySizeButton.action = #selector(applySizeButtonPressed(_:))
-
-    cancelSizeButton.translatesAutoresizingMaskIntoConstraints = false
-    cancelSizeButton.bezelStyle = .rounded
-    cancelSizeButton.keyEquivalent = "\u{1b}"
-    cancelSizeButton.setAccessibilityIdentifier("pip.size.cancel")
-    cancelSizeButton.setAccessibilityLabel("취소")
-    cancelSizeButton.focusRingType = .none
-    cancelSizeButton.target = self
-    cancelSizeButton.action = #selector(cancelSizeButtonPressed(_:))
-
-    // Absorbs spare width so the buttons sit at the trailing edge, like the
-    // regular controls row.
-    let sizeEditorSpacer = NSView()
-    sizeEditorSpacer.translatesAutoresizingMaskIntoConstraints = false
-    sizeEditorSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-    sizeEditorSpacer.setContentCompressionResistancePriority(
-      NSLayoutConstraint.Priority(1),
-      for: .horizontal
+    configureIconButton(
+      applySizeButton,
+      symbol: "checkmark.circle.fill",
+      label: L10n.string("panel.apply"),
+      identifier: "pip.size.apply",
+      action: #selector(applySizeButtonPressed(_:))
     )
+    // Palette keeps the checkmark legible inside the filled blue circle.
+    applySizeButton.symbolConfiguration = NSImage.SymbolConfiguration(
+      pointSize: 15, weight: .medium
+    ).applying(NSImage.SymbolConfiguration(paletteColors: [.white, .systemBlue]))
+    applySizeButton.keyEquivalent = "\r"
 
-    for view in [
-      widthField, timesLabel, heightField, sizeEditorSpacer, applySizeButton, cancelSizeButton,
-    ] {
+    configureIconButton(
+      cancelSizeButton,
+      symbol: "xmark.circle",
+      label: L10n.string("panel.cancel"),
+      identifier: "pip.size.cancel",
+      action: #selector(cancelSizeButtonPressed(_:))
+    )
+    cancelSizeButton.keyEquivalent = "\u{1b}"
+
+    for view in [widthField, timesLabel, heightField, applySizeButton, cancelSizeButton] {
       sizeEditor.addArrangedSubview(view)
     }
     sizeEditor.translatesAutoresizingMaskIntoConstraints = false
     sizeEditor.orientation = .horizontal
     sizeEditor.alignment = .centerY
     sizeEditor.distribution = .fill
-    sizeEditor.spacing = 8
+    sizeEditor.spacing = 6
+    sizeEditor.setCustomSpacing(10, after: heightField)
     sizeEditor.setAccessibilityIdentifier("pip.size.editor")
     sizeEditor.isHidden = true
 
-    // Hidden rows are detached (NSStackView default), so exactly one 30pt
-    // bottom row is laid out in either mode and the chrome size is stable.
-    let stack = NSStackView(views: [videoContainer, controls, sizeEditor])
-    stack.translatesAutoresizingMaskIntoConstraints = false
-    stack.orientation = .vertical
-    stack.alignment = .width
-    stack.distribution = .fill
-    stack.spacing = 8
-    stack.setAccessibilityIdentifier("pip.layout")
+    // Hidden rows are detached (NSStackView default), so the overlay hugs
+    // whichever row is active.
+    let overlayContent = NSStackView(views: [controls, sizeEditor])
+    overlayContent.translatesAutoresizingMaskIntoConstraints = false
+    overlayContent.orientation = .horizontal
+    overlayContent.alignment = .centerY
+    overlayContent.spacing = 0
 
-    rootView.addSubview(stack)
+    configureHUD(overlay)
+    overlay.layer?.cornerRadius = 8
+    overlay.setAccessibilityIdentifier("pip.overlay")
+    overlay.setAccessibilityLabel(L10n.string("panel.controls"))
+    overlay.addSubview(overlayContent)
+
+    let badgeImage = NSImageView()
+    badgeImage.translatesAutoresizingMaskIntoConstraints = false
+    badgeImage.image = NSImage(
+      systemSymbolName: "cursorarrow.click.2",
+      accessibilityDescription: L10n.string("panel.clickThrough")
+    )
+    badgeImage.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
+    badgeImage.contentTintColor = .labelColor
+    badgeImage.setAccessibilityElement(false)
+
+    configureHUD(clickThroughBadge)
+    clickThroughBadge.layer?.cornerRadius = 11
+    clickThroughBadge.alphaValue = 0.85
+    clickThroughBadge.isHidden = true
+    clickThroughBadge.setAccessibilityElement(true)
+    clickThroughBadge.setAccessibilityRole(.image)
+    clickThroughBadge.setAccessibilityIdentifier("pip.clickThroughBadge")
+    clickThroughBadge.setAccessibilityLabel(L10n.string("panel.clickThrough"))
+    clickThroughBadge.toolTip = L10n.string("panel.clickThrough")
+    clickThroughBadge.addSubview(badgeImage)
+
+    rootView.addSubview(videoContainer)
+    rootView.addSubview(overlay)
+    rootView.addSubview(clickThroughBadge)
+
+    // Below NSLayoutConstraint.Priority.windowSizeStayPut (500): the
+    // floating views may overflow a narrow panel but can never hold the
+    // window open or resist a resize.
+    let overlayFitPriority = NSLayoutConstraint.Priority(490)
+    let overlayLeading = overlay.leadingAnchor.constraint(
+      greaterThanOrEqualTo: rootView.leadingAnchor, constant: 8)
+    overlayLeading.priority = overlayFitPriority
+    let overlayTrailing = overlay.trailingAnchor.constraint(
+      lessThanOrEqualTo: rootView.trailingAnchor, constant: -8)
+    overlayTrailing.priority = overlayFitPriority
+
+    // The video fills the whole content view, so there is no content chrome:
+    // the overlay and badge float above it and take no part in sizing.
     NSLayoutConstraint.activate([
-      stack.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 12),
-      stack.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -12),
-      stack.topAnchor.constraint(equalTo: rootView.topAnchor, constant: 12),
-      stack.bottomAnchor.constraint(equalTo: rootView.bottomAnchor, constant: -12),
+      videoContainer.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
+      videoContainer.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
+      videoContainer.topAnchor.constraint(equalTo: rootView.topAnchor),
+      videoContainer.bottomAnchor.constraint(equalTo: rootView.bottomAnchor),
       videoContainer.heightAnchor.constraint(greaterThanOrEqualToConstant: 120),
-      controls.heightAnchor.constraint(equalToConstant: 30),
-      sizeEditor.heightAnchor.constraint(equalToConstant: 30),
-      chooseWindowButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 72),
-      closeButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
-      applySizeButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
-      cancelSizeButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
+
+      overlay.centerXAnchor.constraint(equalTo: rootView.centerXAnchor),
+      overlay.bottomAnchor.constraint(equalTo: rootView.bottomAnchor, constant: -8),
+      overlayLeading,
+      overlayTrailing,
+      overlayContent.leadingAnchor.constraint(equalTo: overlay.leadingAnchor, constant: 10),
+      overlayContent.trailingAnchor.constraint(equalTo: overlay.trailingAnchor, constant: -6),
+      overlayContent.topAnchor.constraint(equalTo: overlay.topAnchor, constant: 4),
+      overlayContent.bottomAnchor.constraint(equalTo: overlay.bottomAnchor, constant: -4),
+      controls.heightAnchor.constraint(equalToConstant: 24),
+      sizeEditor.heightAnchor.constraint(equalToConstant: 24),
+
+      clickThroughBadge.topAnchor.constraint(equalTo: rootView.topAnchor, constant: 8),
+      clickThroughBadge.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -8),
+      clickThroughBadge.heightAnchor.constraint(equalToConstant: 22),
+      badgeImage.leadingAnchor.constraint(equalTo: clickThroughBadge.leadingAnchor, constant: 8),
+      badgeImage.trailingAnchor.constraint(equalTo: clickThroughBadge.trailingAnchor, constant: -8),
+      badgeImage.centerYAnchor.constraint(equalTo: clickThroughBadge.centerYAnchor),
     ])
 
     videoContainer.setContentHuggingPriority(.defaultLow, for: .vertical)
     videoContainer.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+  }
+
+  /// Dark HUD material for views floating over the video. The dark
+  /// appearance is fixed because the backdrop is always video (or black),
+  /// whatever the system appearance.
+  private func configureHUD(_ view: NSVisualEffectView) {
+    view.translatesAutoresizingMaskIntoConstraints = false
+    view.material = .hudWindow
+    view.blendingMode = .withinWindow
+    view.state = .active
+    view.appearance = NSAppearance(named: .darkAqua)
+    view.wantsLayer = true
+    view.layer?.cornerCurve = .continuous
+    view.layer?.masksToBounds = true
+  }
+
+  private func configureIconButton(
+    _ button: NSButton,
+    symbol: String,
+    label: String,
+    identifier: String,
+    action: Selector
+  ) {
+    button.translatesAutoresizingMaskIntoConstraints = false
+    button.title = ""
+    button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+    button.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+    button.imagePosition = .imageOnly
+    button.imageScaling = .scaleProportionallyDown
+    button.isBordered = false
+    button.focusRingType = .none
+    button.toolTip = label
+    button.setAccessibilityIdentifier(identifier)
+    button.setAccessibilityLabel(label)
+    button.target = self
+    button.action = action
+    NSLayoutConstraint.activate([
+      button.widthAnchor.constraint(equalToConstant: 24),
+      button.heightAnchor.constraint(equalToConstant: 24),
+    ])
   }
 
   private func configureSizeField(_ field: NSTextField, identifier: String, label: String) {
@@ -516,6 +1015,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     formatter.maximum = 9999
 
     field.translatesAutoresizingMaskIntoConstraints = false
+    field.controlSize = .small
+    field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
     field.formatter = formatter
     field.isEditable = true
     field.isSelectable = true
@@ -526,10 +1027,10 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     field.setAccessibilityIdentifier(identifier)
     field.setAccessibilityLabel(label)
 
-    let preferredWidth = field.widthAnchor.constraint(equalToConstant: 60)
+    let preferredWidth = field.widthAnchor.constraint(equalToConstant: 52)
     preferredWidth.priority = .defaultHigh
     NSLayoutConstraint.activate([
-      field.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
+      field.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
       preferredWidth,
     ])
   }
@@ -617,6 +1118,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     panel.makeFirstResponder(nil)
     sizeEditor.isHidden = true
     controls.isHidden = false
+    refreshOverlay(animated: true)
   }
 
   private func configureScreenChangeObservation() {
@@ -648,6 +1150,11 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
   @objc
   private func chooseWindowButtonPressed(_ sender: NSButton) {
     onChooseWindow?()
+  }
+
+  @objc
+  private func cropButtonPressed(_ sender: NSButton) {
+    onBeginCrop?()
   }
 
   @objc
@@ -686,6 +1193,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     guard !closeCallbackDelivered else { return }
     closeCallbackDelivered = true
     endSizeEditing()
+    cancelCropSelection()
     panel.orderOut(nil)
     onClose?()
   }
@@ -722,8 +1230,10 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     emitVideoPixelSizeIfChanged()
   }
 
-  /// Size of the non-video content (padding and controls), measured from
-  /// the live layout so it tracks the content constraints.
+  /// Size of the non-video content, measured from the live layout so it
+  /// tracks the content constraints. The video currently fills the content
+  /// view (the hover overlay floats above it), so this is zero; the frame
+  /// math still goes through it so any future chrome stays accounted for.
   private func contentChromeSize() -> NSSize {
     guard let contentView = panel.contentView else { return .zero }
     contentView.layoutSubtreeIfNeeded()
@@ -819,6 +1329,27 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     return constrainedFrame(NSRect(origin: origin, size: size), to: visible)
   }
 
+  /// Centered aspect fit of `aspect` (width / height) inside `bounds`, as the
+  /// renderer letterboxes the video. A missing or invalid aspect yields
+  /// `bounds`.
+  private static func aspectFitRect(aspect: CGFloat?, in bounds: NSRect) -> NSRect {
+    guard let aspect, aspect.isFinite, aspect > 0, bounds.width > 0, bounds.height > 0 else {
+      return bounds
+    }
+    let size: NSSize
+    if aspect > bounds.width / bounds.height {
+      size = NSSize(width: bounds.width, height: bounds.width / aspect)
+    } else {
+      size = NSSize(width: bounds.height * aspect, height: bounds.height)
+    }
+    return NSRect(
+      x: bounds.midX - size.width / 2,
+      y: bounds.midY - size.height / 2,
+      width: size.width,
+      height: size.height
+    )
+  }
+
   private static func constrainedFrame(_ frame: NSRect, to visibleFrame: NSRect) -> NSRect {
     guard !visibleFrame.isEmpty else { return frame }
 
@@ -836,23 +1367,26 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
   private static func presentation(for state: CaptureState) -> (title: String, status: String) {
     switch state {
     case .idle:
-      return ("PiP", "창을 선택하세요")
+      return ("PiP", L10n.string("state.idle"))
     case .selecting:
-      return ("PiP", "창 선택 중…")
+      return ("PiP", L10n.string("state.selecting"))
     case .starting:
-      return ("PiP", "시작 중…")
+      return ("PiP", L10n.string("state.starting"))
     case .running(let source):
-      let name = displayText(source, fallback: "창")
-      return ("PiP — \(name)", "실시간: \(name)")
+      let name = displayText(source, fallback: L10n.string("capture.untitledWindow"))
+      return ("PiP — \(name)", L10n.format("state.running", name))
     case .suspended(let reason):
-      let detail = displayText(reason, fallback: "일시 중지됨")
-      return ("PiP", reason.isEmpty ? "일시 중지됨" : "일시 중지됨: \(detail)")
+      let paused = L10n.string("state.paused")
+      let detail = displayText(reason, fallback: paused)
+      return ("PiP", reason.isEmpty ? paused : L10n.format("state.pausedReason", detail))
     case .stopped(let reason):
-      let detail = displayText(reason, fallback: "중지됨")
-      return ("PiP", reason.isEmpty ? "중지됨" : "중지됨: \(detail)")
+      let stopped = L10n.string("state.stopped")
+      let detail = displayText(reason, fallback: stopped)
+      return ("PiP", reason.isEmpty ? stopped : L10n.format("state.stoppedReason", detail))
     case .failed(let reason):
-      let detail = displayText(reason, fallback: "오류")
-      return ("PiP", reason.isEmpty ? "오류" : "실패: \(detail)")
+      let error = L10n.string("state.error")
+      let detail = displayText(reason, fallback: error)
+      return ("PiP", reason.isEmpty ? error : L10n.format("state.failedReason", detail))
     }
   }
 

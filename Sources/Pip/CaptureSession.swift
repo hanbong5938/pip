@@ -7,6 +7,37 @@ import ScreenCaptureKit
 @MainActor
 final class CaptureSession {
   var onStateChange: ((CaptureState) -> Void)?
+  /// Fired once per source when the captured window disappears. The session
+  /// has already stopped the stream and published
+  /// `.stopped(capture.sourceClosed)` when this runs.
+  var onSourceWindowClosed: (() -> Void)?
+
+  /// Capture rate applied to every stream of this session; changes apply live.
+  private(set) var frameRate: FrameRate = .fps30
+  /// Normalized region of the source window (0...1, top-left origin, source
+  /// orientation). `nil` captures the whole window. Every new source starts
+  /// uncropped because the region is meaningless for a different window. A
+  /// region the stream rejects reverts to the last applied one, so this always
+  /// describes what is captured once updates settle.
+  private(set) var crop: CGRect?
+  /// Window behind the current stream; `nil` while no stream exists.
+  private(set) var sourceWindowID: CGWindowID?
+
+  /// `SCContentSharingPicker.shared` is process-wide while sessions are
+  /// per-PiP: the shared configuration is applied once, and `isActive` stays
+  /// on while at least one session holds an activation (see
+  /// `updatePickerActivation()`).
+  private static var pickerConfigured = false
+  private static var pickerActivationCount = 0
+  /// The only session allowed to present the picker and to consume picker
+  /// events that carry no stream. Held from `present` until the picker
+  /// reports cancel, update, or start failure (see `pickerPresentation`).
+  private static weak var presentingSession: CaptureSession?
+  private static let sourcePollInterval: Duration = .seconds(2)
+  private static let sourceCloseGracePeriod: Duration = .seconds(1)
+  /// Crops narrower or shorter than this fraction of the window are treated
+  /// as accidental and ignored.
+  private static let minimumCropFraction: CGFloat = 0.01
 
   private let onFrame: @Sendable (CaptureFrame) -> Void
   private let onReset: @Sendable (UInt64) -> Void
@@ -16,15 +47,40 @@ final class CaptureSession {
   private var state: CaptureState = .idle
   private var generation: UInt64 = 0
   private var operationID: UInt64 = 0
-  private var currentStream: StreamContext?
+  /// Every stream change also refreshes `sourceWindowID`, the source-window
+  /// monitor, and this session's picker activation.
+  private var currentStream: StreamContext? {
+    didSet {
+      guard currentStream !== oldValue else { return }
+      sourceWindowID = currentStream?.sourceWindowID
+      restartSourceMonitor()
+      updatePickerActivation()
+    }
+  }
   private var pendingSource: PendingSource?
   private var replacementTask: Task<Void, Never>?
   private var stopTask: Task<Void, Never>?
   private var intentionalStops = Set<ObjectIdentifier>()
   private nonisolated(unsafe) var workspaceObserverTokens: [NSObjectProtocol] = []
+  /// The user is choosing a source in the picker this session presented;
+  /// implies `pickerPresentation`, which can outlive it.
   private var selectionInProgress = false
+  /// Set while the picker this session presented may still be on screen. A
+  /// source chosen from the in-app list ends the selection but not the sheet,
+  /// so this session stays the presenting session until the picker reports
+  /// back for it.
+  private var pickerPresentation: PickerPresentation? {
+    didSet {
+      if pickerPresentation != nil {
+        Self.presentingSession = self
+      } else if Self.presentingSession === self {
+        Self.presentingSession = nil
+      }
+    }
+  }
   private var stateBeforeSelection: CaptureState?
   private var pickerObserver: PickerObserverBridge?
+  private var holdsPickerActivation = false
   private var workspaceInactive = false
   private var streamInactive = false
   private var frameSuspended = false
@@ -33,8 +89,10 @@ final class CaptureSession {
   private var lastWorkspaceTransitionID: UInt64 = 0
   private var userStopped = false
   private var selectionRequestedAfterStop = false
+  private var startRequestedAfterStop: PendingStart?
   private var targetOutputSize: CGSize?
-  private var outputSizeUpdateTask: Task<Void, Never>?
+  private var configurationUpdateTask: Task<Void, Never>?
+  private var sourceMonitorTask: Task<Void, Never>?
 
   init(
     onFrame: @escaping @Sendable (CaptureFrame) -> Void,
@@ -72,22 +130,48 @@ final class CaptureSession {
 
   func chooseWindow() {
     if stopTask != nil {
+      startRequestedAfterStop = nil
       selectionRequestedAfterStop = true
       return
     }
     guard !selectionInProgress else { return }
+    // The shared picker shows one selection at a time; another session's
+    // open picker wins and this request is dropped.
+    if let presenter = Self.presentingSession, presenter !== self { return }
 
     userStopped = false
     selectionInProgress = true
     stateBeforeSelection = state
+    // Re-presenting over this session's own still-open sheet just brings it
+    // back for the current stream.
+    let stream = currentStream?.stream
+    pickerPresentation = PickerPresentation(stream: stream)
     publish(.selecting)
-    picker.isActive = true
+    updatePickerActivation()
 
-    if let stream = currentStream?.stream {
+    if let stream {
       picker.present(for: stream, using: .window)
     } else {
       picker.present(using: .window)
     }
+  }
+
+  /// Starts capturing `filter` (or replaces the current source) without the
+  /// system picker, through the same pipeline as a picker selection. Any
+  /// picker selection this session has open is ended first.
+  func start(filter: SCContentFilter, title: String) {
+    if stopTask != nil {
+      selectionRequestedAfterStop = false
+      startRequestedAfterStop = PendingStart(filter: filter, title: title)
+      return
+    }
+
+    userStopped = false
+    let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    acceptSource(
+      filter: filter,
+      title: trimmedTitle.isEmpty ? L10n.string("capture.untitledWindow") : trimmedTitle
+    )
   }
 
   func stop() async {
@@ -106,6 +190,9 @@ final class CaptureSession {
 
   private func performStop() async {
     userStopped = true
+    // An open sheet keeps `pickerPresentation` (and with it the presenting
+    // slot and a picker activation) until the picker reports back; its
+    // choice is then dropped because the session is stopped.
     selectionInProgress = false
     stateBeforeSelection = nil
     pendingSource = nil
@@ -126,11 +213,15 @@ final class CaptureSession {
       await stop(context, intentionally: true)
     }
     currentStream = nil
-    publish(.stopped("중지됨"))
+    publish(.stopped(L10n.string("capture.stopped")))
     stopTask = nil
-    deactivatePickerIfIdle()
+    updatePickerActivation()
 
-    if selectionRequestedAfterStop {
+    if let start = startRequestedAfterStop {
+      startRequestedAfterStop = nil
+      selectionRequestedAfterStop = false
+      self.start(filter: start.filter, title: start.title)
+    } else if selectionRequestedAfterStop {
       selectionRequestedAfterStop = false
       chooseWindow()
     }
@@ -148,62 +239,100 @@ final class CaptureSession {
     )
     guard target != targetOutputSize else { return }
     targetOutputSize = target
-    applyOutputSizeIfNeeded()
+    applyConfigurationIfNeeded()
   }
 
-  private func applyOutputSizeIfNeeded() {
-    guard outputSizeUpdateTask == nil,
+  /// Sets the capture rate; a running stream is reconfigured without restart.
+  func setFrameRate(_ rate: FrameRate) {
+    guard rate != frameRate else { return }
+    frameRate = rate
+    applyConfigurationIfNeeded()
+  }
+
+  /// Sets the captured region as a normalized, top-left-origin rect of the
+  /// source window. The rect is clamped to 0...1; `nil`, the whole window, or
+  /// a region under `minimumCropFraction` on either axis clears the crop.
+  /// A running stream is reconfigured without restart.
+  func setCrop(_ normalized: CGRect?) {
+    let sanitized = normalized.flatMap(Self.sanitizedCrop)
+    guard sanitized != crop else { return }
+    crop = sanitized
+    // Map the region onto the window as it is now, not as of the last poll.
+    if let context = currentStream,
+      let windowID = context.sourceWindowID,
+      let windowSize = Self.liveWindowSize(of: windowID)
+    {
+      context.windowSize = windowSize
+    }
+    applyConfigurationIfNeeded()
+  }
+
+  private func applyConfigurationIfNeeded() {
+    guard configurationUpdateTask == nil,
       let context = currentStream,
       context.started,
       !context.stopSignaled,
-      outputSize(for: context.filter) != context.appliedOutputSize
+      streamSettings(for: context) != context.appliedSettings
     else { return }
 
-    outputSizeUpdateTask = Task { @MainActor [weak self] in
+    configurationUpdateTask = Task { @MainActor [weak self] in
       guard let self else { return }
-      await self.drainOutputSizeUpdates()
+      await self.drainConfigurationUpdates()
     }
   }
 
-  /// Applies the latest target to the current stream, one update at a time.
-  /// Targets that arrive while an update is in flight are picked up by the
-  /// next loop iteration; a stopping or not-yet-started stream ends the loop.
-  private func drainOutputSizeUpdates() async {
-    defer { outputSizeUpdateTask = nil }
+  /// Applies the latest settings (output size, frame rate, crop, window size)
+  /// to the current stream, one update at a time. Changes that arrive while an
+  /// update is in flight are picked up by the next loop iteration; a stopping
+  /// or not-yet-started stream ends the loop. A failed update is not retried
+  /// for the same stream and settings, so a rejected configuration cannot spin.
+  private func drainConfigurationUpdates() async {
+    defer { configurationUpdateTask = nil }
 
-    var failedUpdate: (context: StreamContext, size: CGSize)?
+    var failedUpdate: (context: StreamContext, settings: StreamSettings)?
     while let context = currentStream,
       context.started,
       !context.stopSignaled
     {
-      let configuration = makeConfiguration(for: context.filter)
-      let size = CGSize(width: configuration.width, height: configuration.height)
-      guard size != context.appliedOutputSize else { return }
-      if let failedUpdate, failedUpdate.context === context, failedUpdate.size == size {
+      let settings = streamSettings(for: context)
+      guard settings != context.appliedSettings else { return }
+      if let failedUpdate, failedUpdate.context === context, failedUpdate.settings == settings {
         return
       }
 
+      let configuration = makeConfiguration(with: settings)
       do {
         try await context.stream.updateConfiguration(configuration)
       } catch {
-        // The stream keeps running with its previous configuration.
-        failedUpdate = (context, size)
+        // The stream keeps running with its previous configuration. A
+        // rejected crop reverts to the applied one, because callers compose
+        // new regions on `crop`; a newer request is left to the next pass.
+        failedUpdate = (context, settings)
+        if currentStream === context, crop == settings.crop,
+          settings.crop != context.appliedSettings.crop
+        {
+          crop = context.appliedSettings.crop
+        }
         continue
       }
       failedUpdate = nil
       guard currentStream === context else { continue }
-      context.appliedOutputSize = size
+      context.appliedSettings = settings
     }
   }
 
   private func configurePicker() {
-    var configuration = SCContentSharingPickerConfiguration()
-    configuration.allowedPickerModes = .singleWindow
-    configuration.excludedBundleIDs = [Bundle.main.bundleIdentifier ?? "dev.local.pip"]
-    configuration.allowsChangingSelectedContent = true
+    if !Self.pickerConfigured {
+      Self.pickerConfigured = true
+      var configuration = SCContentSharingPickerConfiguration()
+      configuration.allowedPickerModes = .singleWindow
+      configuration.excludedBundleIDs = [Bundle.main.bundleIdentifier ?? "dev.local.pip"]
+      configuration.allowsChangingSelectedContent = true
 
-    picker.defaultConfiguration = configuration
-    picker.maximumStreamCount = 1
+      picker.defaultConfiguration = configuration
+      // Each PiP owns its own stream, so the system must not cap the count.
+      picker.maximumStreamCount = nil
+    }
     if let pickerObserver {
       picker.add(pickerObserver)
     }
@@ -214,8 +343,8 @@ final class CaptureSession {
     let sharedFrameGate = frameGate
     let workspaceTransitions = workspaceTransitionBox
     let pauseNotifications: [(Notification.Name, String)] = [
-      (NSWorkspace.screensDidSleepNotification, "화면을 사용할 수 없습니다"),
-      (NSWorkspace.sessionDidResignActiveNotification, "세션이 비활성 상태입니다"),
+      (NSWorkspace.screensDidSleepNotification, L10n.string("capture.screenUnavailable")),
+      (NSWorkspace.sessionDidResignActiveNotification, L10n.string("capture.sessionInactive")),
     ]
     for (name, reason) in pauseNotifications {
       let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -284,11 +413,11 @@ final class CaptureSession {
       frameSuspensionRevision = nil
     }
     if streamInactive {
-      publish(.suspended("캡처가 일시 중지되었습니다"))
+      publish(.suspended(L10n.string("capture.paused")))
       return
     }
     if frameSuspended || frameGate.hasFrameSuspension(context.generation) {
-      publish(.suspended("캡처가 일시 중지되었습니다"))
+      publish(.suspended(L10n.string("capture.paused")))
       return
     }
 
@@ -296,16 +425,17 @@ final class CaptureSession {
   }
 
   private func handlePickerCancel(_ event: PickerStreamEvent) {
-    guard selectionInProgress, stopTask == nil, !userStopped else { return }
-    if let associatedStream = event.stream {
-      guard let currentStream,
-        !currentStream.stopSignaled,
-        associatedStream === currentStream.stream
-      else { return }
+    guard isPickerPresentationEvent(event.stream) else { return }
+    pickerPresentation = nil
+    guard selectionInProgress, stopTask == nil, !userStopped else {
+      // The sheet outlived the selection (list pick or stop); only the
+      // presentation and its activation end.
+      updatePickerActivation()
+      return
     }
 
     selectionInProgress = false
-    deactivatePickerIfIdle()
+    updatePickerActivation()
     let previousState = stateBeforeSelection
     stateBeforeSelection = nil
     if let previousState,
@@ -322,10 +452,16 @@ final class CaptureSession {
   }
 
   private func handlePickerStartFailure() {
-    guard selectionInProgress, stopTask == nil, !userStopped else { return }
+    // The failure carries no stream, so only the presenting session owns it.
+    guard isPickerPresentationEvent(nil) else { return }
+    pickerPresentation = nil
+    guard selectionInProgress, stopTask == nil, !userStopped else {
+      updatePickerActivation()
+      return
+    }
 
     selectionInProgress = false
-    deactivatePickerIfIdle()
+    updatePickerActivation()
     let previousState = stateBeforeSelection
     stateBeforeSelection = nil
     if let previousState,
@@ -339,26 +475,39 @@ final class CaptureSession {
     } else if case .selecting = state {
       publish(.idle)
     } else if currentStream == nil {
-      publish(.failed("창 선택기를 사용할 수 없습니다"))
+      publish(.failed(L10n.string("capture.pickerUnavailable")))
     }
   }
 
   private func handlePickerUpdate(_ update: PickerUpdate) {
-    guard !userStopped, stopTask == nil else { return }
-    if let associatedStream = update.stream {
-      guard let currentStream,
+    let fromPresentation = isPickerPresentationEvent(update.stream)
+    if fromPresentation {
+      pickerPresentation = nil
+    }
+    guard !userStopped, stopTask == nil else {
+      updatePickerActivation()
+      return
+    }
+    if !fromPresentation {
+      // Otherwise only a change of this session's live stream, e.g. from the
+      // system screen-sharing menu, belongs here.
+      guard let associatedStream = update.stream,
+        let currentStream,
         !currentStream.stopSignaled,
         associatedStream === currentStream.stream
       else { return }
-    } else {
-      guard selectionInProgress else { return }
     }
 
     guard update.filter.style == .window,
       update.filter.includedWindows.count == 1
     else {
+      // A late sheet choice must not fail a source picked from the list.
+      guard selectionInProgress || !fromPresentation else {
+        updatePickerActivation()
+        return
+      }
       selectionInProgress = false
-      deactivatePickerIfIdle()
+      updatePickerActivation()
       let previousState = stateBeforeSelection
       stateBeforeSelection = nil
       if let previousState,
@@ -366,16 +515,37 @@ final class CaptureSession {
       {
         publish(previousState)
       } else {
-        publish(.failed("창 선택을 사용할 수 없습니다"))
+        publish(.failed(L10n.string("capture.selectionUnavailable")))
       }
       return
     }
 
+    // The latest user choice wins, even over a source picked from the list
+    // while the sheet was open.
+    acceptSource(filter: update.filter, title: Self.title(for: update.filter))
+  }
+
+  /// Whether a picker event answers the sheet this session presented. Events
+  /// without a stream go to the presenting session, which is the only one
+  /// holding a presentation.
+  private func isPickerPresentationEvent(_ stream: SCStream?) -> Bool {
+    guard let pickerPresentation else { return false }
+    guard let stream else { return true }
+    return stream === pickerPresentation.stream
+  }
+
+  /// Common entry for a new source, from the picker or the in-app list. Ends
+  /// any open selection and queues the source behind in-flight replacements.
+  /// A still-open sheet keeps its presentation; its later choice replaces
+  /// this source.
+  private func acceptSource(filter: SCContentFilter, title: String) {
     selectionInProgress = false
     stateBeforeSelection = nil
-    let title = Self.title(for: update.filter)
+    // A crop describes a region of the previous window only.
+    crop = nil
     let operation = nextOperationID()
-    pendingSource = PendingSource(filter: update.filter, title: title, operationID: operation)
+    pendingSource = PendingSource(filter: filter, title: title, operationID: operation)
+    updatePickerActivation()
     publish(.starting)
     scheduleReplacement()
   }
@@ -391,7 +561,7 @@ final class CaptureSession {
   private func drainPendingSources() async {
     defer {
       replacementTask = nil
-      deactivatePickerIfIdle()
+      updatePickerActivation()
     }
 
     while !userStopped {
@@ -420,8 +590,11 @@ final class CaptureSession {
       streamGeneration = advanceGeneration()
     }
 
-    let configuration = makeConfiguration(for: source.filter)
-    let appliedOutputSize = CGSize(width: configuration.width, height: configuration.height)
+    let windowID = Self.windowID(for: source.filter)
+    let windowSize =
+      windowID.flatMap(Self.liveWindowSize(of:)) ?? source.filter.contentRect.size
+    let settings = streamSettings(for: source.filter, windowSize: windowSize)
+    let configuration = makeConfiguration(with: settings)
     let generationBox = GenerationBox(streamGeneration)
     let output = StreamOutputBridge(
       generationBox: generationBox,
@@ -459,7 +632,9 @@ final class CaptureSession {
       generationBox: generationBox,
       title: source.title,
       filter: source.filter,
-      appliedOutputSize: appliedOutputSize
+      sourceWindowID: windowID,
+      windowSize: windowSize,
+      appliedSettings: settings
     )
     currentStream = context
 
@@ -489,17 +664,17 @@ final class CaptureSession {
 
       if workspaceInactive {
         frameGate.pause(context.generation, for: .workspace)
-        publish(.suspended("화면을 사용할 수 없습니다"))
+        publish(.suspended(L10n.string("capture.screenUnavailable")))
       } else if streamInactive {
         frameGate.pause(context.generation, for: .stream)
-        publish(.suspended("캡처가 일시 중지되었습니다"))
+        publish(.suspended(L10n.string("capture.paused")))
       } else if frameSuspended {
-        publish(.suspended("캡처가 일시 중지되었습니다"))
+        publish(.suspended(L10n.string("capture.paused")))
       } else {
         frameGate.resume(context.generation)
         publish(.running(source.title))
       }
-      applyOutputSizeIfNeeded()
+      applyConfigurationIfNeeded()
     } catch {
       await stop(context, intentionally: true)
       if currentStream === context {
@@ -511,15 +686,61 @@ final class CaptureSession {
 
       guard isOperationCurrent(source.operationID) else { return }
       _ = advanceGeneration()
-      publish(.failed("캡처를 사용할 수 없습니다"))
+      publish(.failed(L10n.string("capture.unavailable")))
     }
   }
 
-  private func outputSize(for filter: SCContentFilter) -> CGSize {
-    let sourceRect = filter.contentRect
+  private func streamSettings(for context: StreamContext) -> StreamSettings {
+    streamSettings(for: context.filter, windowSize: context.windowSize)
+  }
+
+  /// `windowSize` is the source window's current size in points; the filter's
+  /// `contentRect` only records the size when the filter was made.
+  private func streamSettings(for filter: SCContentFilter, windowSize: CGSize) -> StreamSettings {
+    let sourceRect = self.sourceRect(for: filter, windowSize: windowSize)
+    return StreamSettings(
+      outputSize: outputSize(for: filter, windowSize: windowSize, capturing: sourceRect),
+      frameRate: frameRate,
+      crop: sourceRect == nil ? nil : crop,
+      sourceRect: sourceRect
+    )
+  }
+
+  /// The crop in window points with a top-left origin, as
+  /// `SCStreamConfiguration.sourceRect` expects for single-window filters.
+  /// Edges snap to whole source pixels so the captured pixels have exactly
+  /// the aspect the output is sized for.
+  private func sourceRect(for filter: SCContentFilter, windowSize: CGSize) -> CGRect? {
+    guard let crop else { return nil }
+    guard windowSize.width.isFinite, windowSize.height.isFinite,
+      windowSize.width > 0, windowSize.height > 0
+    else { return nil }
     let pointScale = max(CGFloat(filter.pointPixelScale), 1)
-    let sourceWidth = max(sourceRect.width * pointScale, 1)
-    let sourceHeight = max(sourceRect.height * pointScale, 1)
+    let pixelWidth = windowSize.width * pointScale
+    let pixelHeight = windowSize.height * pointScale
+    let minX = (crop.minX * pixelWidth).rounded()
+    let minY = (crop.minY * pixelHeight).rounded()
+    let maxX = max((crop.maxX * pixelWidth).rounded(), minX + 1)
+    let maxY = max((crop.maxY * pixelHeight).rounded(), minY + 1)
+    return CGRect(
+      x: minX / pointScale,
+      y: minY / pointScale,
+      width: (maxX - minX) / pointScale,
+      height: (maxY - minY) / pointScale
+    )
+  }
+
+  /// Fits the captured region (the crop, else the whole window) inside the
+  /// target without exceeding its native pixels, keeping its aspect.
+  private func outputSize(
+    for filter: SCContentFilter,
+    windowSize: CGSize,
+    capturing sourceRect: CGRect?
+  ) -> CGSize {
+    let capturedSize = sourceRect?.size ?? windowSize
+    let pointScale = max(CGFloat(filter.pointPixelScale), 1)
+    let sourceWidth = max(capturedSize.width * pointScale, 1)
+    let sourceHeight = max(capturedSize.height * pointScale, 1)
     let target = targetOutputSize ?? CGSize(width: 1280, height: 720)
     let scale = min(1, target.width / sourceWidth, target.height / sourceHeight)
 
@@ -528,14 +749,19 @@ final class CaptureSession {
     return CGSize(width: width, height: height)
   }
 
-  private func makeConfiguration(for filter: SCContentFilter) -> SCStreamConfiguration {
-    let size = outputSize(for: filter)
-    let width = Int(size.width)
-    let height = Int(size.height)
+  private func makeConfiguration(with settings: StreamSettings) -> SCStreamConfiguration {
     let configuration = SCStreamConfiguration()
-    configuration.width = width
-    configuration.height = height
-    configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+    configuration.width = Int(settings.outputSize.width)
+    configuration.height = Int(settings.outputSize.height)
+    configuration.minimumFrameInterval = CMTime(
+      value: 1,
+      timescale: CMTimeScale(settings.frameRate.framesPerSecond)
+    )
+    // Left unset (zero) the whole window is captured, which is also how a
+    // live update clears a previous crop.
+    if let sourceRect = settings.sourceRect {
+      configuration.sourceRect = sourceRect
+    }
     configuration.pixelFormat = kCVPixelFormatType_32BGRA
     configuration.scalesToFit = true
     configuration.preservesAspectRatio = true
@@ -602,7 +828,7 @@ final class CaptureSession {
       frameSuspensionRevision = event.revision == 0 ? nil : event.revision
       publish(
         .suspended(
-          workspaceInactive ? "화면을 사용할 수 없습니다" : "캡처가 일시 중지되었습니다"
+          L10n.string(workspaceInactive ? "capture.screenUnavailable" : "capture.paused")
         ))
     case .complete:
       guard frameSuspended || streamInactive,
@@ -626,9 +852,9 @@ final class CaptureSession {
         revision: event.revision
       )
       if workspaceInactive {
-        publish(.suspended("화면을 사용할 수 없습니다"))
+        publish(.suspended(L10n.string("capture.screenUnavailable")))
       } else if streamInactive {
-        publish(.suspended("캡처가 일시 중지되었습니다"))
+        publish(.suspended(L10n.string("capture.paused")))
       } else {
         publish(.running(context.title))
       }
@@ -667,14 +893,122 @@ final class CaptureSession {
     frameGate.pause(context.generation)
     _ = advanceGeneration()
     await stop(context, intentionally: false)
-    deactivatePickerIfIdle()
+    updatePickerActivation()
+
+    // ScreenCaptureKit reports a closed window as `userStopped`, so the
+    // window's disappearance outranks the stop reason; only a stop requested
+    // through this session does not.
+    let wasRequestedHere = wasUserStopped || userStopped
+    var sourceClosed = false
+    if !wasRequestedHere, let windowID = context.sourceWindowID {
+      sourceClosed = await Self.sourceWindowDisappears(windowID)
+    }
 
     guard operationID == stoppedOperation, currentStream == nil else { return }
-    if stoppedByUser || wasUserStopped || userStopped {
-      publish(.stopped("중지됨"))
+    if wasRequestedHere || userStopped {
+      publish(.stopped(L10n.string("capture.stopped")))
+    } else if sourceClosed {
+      reportSourceClosed(context)
+    } else if stoppedByUser {
+      publish(.stopped(L10n.string("capture.stopped")))
     } else {
-      publish(.failed(failureMessage ?? "캡처가 중지되었습니다"))
+      publish(.failed(failureMessage ?? L10n.string("capture.ended")))
     }
+  }
+
+  /// ScreenCaptureKit ends a window stream slightly before the window server
+  /// drops the window (about 0.25 s in practice), so a stop is matched against
+  /// the window's disappearance for a short grace period.
+  private static func sourceWindowDisappears(_ windowID: CGWindowID) async -> Bool {
+    let deadline = ContinuousClock.now + sourceCloseGracePeriod
+    while WindowCatalog.windowExists(windowID) {
+      guard ContinuousClock.now < deadline else { return false }
+      do {
+        try await Task.sleep(for: .milliseconds(50))
+      } catch {
+        return false
+      }
+    }
+    return true
+  }
+
+  /// Polls the window server while a stream exists: a resized source re-maps
+  /// the crop and output size, and a source window that disappears without
+  /// ending the stream is reported closed (a backstop). The task belongs to
+  /// one stream; any `currentStream` change cancels it.
+  private func restartSourceMonitor() {
+    sourceMonitorTask?.cancel()
+    sourceMonitorTask = nil
+    guard let context = currentStream, let windowID = context.sourceWindowID else { return }
+
+    let interval = Self.sourcePollInterval
+    sourceMonitorTask = Task { @MainActor [weak self] in
+      while true {
+        do {
+          try await Task.sleep(for: interval)
+        } catch {
+          return
+        }
+        guard let self, self.currentStream === context else { return }
+        if let windowSize = CaptureSession.liveWindowSize(of: windowID) {
+          if windowSize != context.windowSize {
+            context.windowSize = windowSize
+            self.applyConfigurationIfNeeded()
+          }
+          continue
+        }
+        guard self.canReportSourceClosed(context),
+          !WindowCatalog.windowExists(windowID)
+        else { continue }
+        // Closing clears `currentStream`, which cancels this task, so it runs
+        // on its own task to keep its stop request uncancelled.
+        Task { @MainActor [weak self] in
+          await self?.handleSourceClosed(context)
+        }
+        return
+      }
+    }
+  }
+
+  /// A source-closed stop must not race a user stop, a source replacement,
+  /// or an open picker; those end or replace `context` themselves, and the
+  /// monitor retries on its next tick.
+  private func canReportSourceClosed(_ context: StreamContext) -> Bool {
+    currentStream === context
+      && !context.stopSignaled
+      && !userStopped
+      && stopTask == nil
+      && replacementTask == nil
+      && !selectionInProgress
+  }
+
+  private func handleSourceClosed(_ context: StreamContext) async {
+    guard canReportSourceClosed(context) else { return }
+    context.stopSignaled = true
+    let stoppedOperation = operationID
+    currentStream = nil
+    streamInactive = false
+    frameSuspended = false
+    frameSuspensionRevision = nil
+    frameGate.pause(context.generation)
+    _ = advanceGeneration()
+    await stop(context, intentionally: true)
+    updatePickerActivation()
+
+    guard operationID == stoppedOperation, currentStream == nil, !userStopped,
+      !selectionInProgress
+    else { return }
+    reportSourceClosed(context)
+  }
+
+  /// Publishes the closed state and fires `onSourceWindowClosed` once per
+  /// stream. While the user is choosing a replacement the callback is held
+  /// back so an auto-close cannot dismiss the PiP mid-selection.
+  private func reportSourceClosed(_ context: StreamContext) {
+    publish(.stopped(L10n.string("capture.sourceClosed")))
+    guard !context.sourceClosedReported, !selectionInProgress else { return }
+    context.sourceClosedReported = true
+    onSourceWindowClosed?()
   }
 
   private func handleStreamActive(_ event: StreamEvent) {
@@ -695,13 +1029,13 @@ final class CaptureSession {
     }
     guard !workspaceInactive else {
       frameGate.pause(context.generation, for: .workspace)
-      publish(.suspended("화면을 사용할 수 없습니다"))
+      publish(.suspended(L10n.string("capture.screenUnavailable")))
       return
     }
     guard !frameSuspended,
       !frameGate.hasFrameSuspension(context.generation)
     else {
-      publish(.suspended("캡처가 일시 중지되었습니다"))
+      publish(.suspended(L10n.string("capture.paused")))
       return
     }
     publish(.running(context.title))
@@ -720,7 +1054,7 @@ final class CaptureSession {
     streamInactive = true
     publish(
       .suspended(
-        workspaceInactive ? "화면을 사용할 수 없습니다" : "캡처가 일시 중지되었습니다"
+        L10n.string(workspaceInactive ? "capture.screenUnavailable" : "capture.paused")
       ))
   }
 
@@ -732,14 +1066,28 @@ final class CaptureSession {
 
   /// `SCContentSharingPicker.isActive` keeps the app listed in the system
   /// screen-sharing menu bar item even without a running stream, so it must
-  /// only stay on while a selection or capture is in flight.
-  private func deactivatePickerIfIdle() {
-    guard !selectionInProgress,
-      currentStream == nil,
-      pendingSource == nil,
-      replacementTask == nil
-    else { return }
-    picker.isActive = false
+  /// only stay on while a selection or capture is in flight. The flag is
+  /// process-wide: each session holds at most one activation while it has a
+  /// selection, an open picker, a pending source, or a stream, and the picker
+  /// turns off only once no session holds one.
+  private func updatePickerActivation() {
+    let needsPicker =
+      selectionInProgress
+      || pickerPresentation != nil
+      || currentStream != nil
+      || pendingSource != nil
+      || replacementTask != nil
+    guard needsPicker != holdsPickerActivation else { return }
+    holdsPickerActivation = needsPicker
+    Self.adjustPickerActivations(by: needsPicker ? 1 : -1)
+  }
+
+  private static func adjustPickerActivations(by delta: Int) {
+    let wasActive = pickerActivationCount > 0
+    pickerActivationCount = max(pickerActivationCount + delta, 0)
+    let isActive = pickerActivationCount > 0
+    guard isActive != wasActive else { return }
+    SCContentSharingPicker.shared.isActive = isActive
   }
 
   private func advanceGeneration() -> UInt64 {
@@ -781,16 +1129,61 @@ final class CaptureSession {
         in: .whitespacesAndNewlines),
       !title.isEmpty
     else {
-      return "창"
+      return L10n.string("capture.untitledWindow")
     }
     return title
+  }
+
+  private static func windowID(for filter: SCContentFilter) -> CGWindowID? {
+    filter.includedWindows.first?.windowID
+  }
+
+  /// The window's current size in points (`kCGWindowBounds`), or `nil` when
+  /// the window server no longer lists it with usable bounds.
+  private static func liveWindowSize(of windowID: CGWindowID) -> CGSize? {
+    guard
+      let info = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowID)
+        as? [[String: Any]],
+      let entry = info.first(where: { entry in
+        (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID
+      }),
+      let boundsDictionary = entry[kCGWindowBounds as String] as? NSDictionary,
+      let bounds = CGRect(dictionaryRepresentation: boundsDictionary as CFDictionary)
+    else { return nil }
+    let size = bounds.size
+    guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0
+    else { return nil }
+    return size
+  }
+
+  private static func sanitizedCrop(_ rect: CGRect) -> CGRect? {
+    guard rect.origin.x.isFinite, rect.origin.y.isFinite,
+      rect.width.isFinite, rect.height.isFinite
+    else { return nil }
+    let standardized = rect.standardized
+    let minX = min(max(standardized.minX, 0), 1)
+    let minY = min(max(standardized.minY, 0), 1)
+    let maxX = min(max(standardized.maxX, 0), 1)
+    let maxY = min(max(standardized.maxY, 0), 1)
+    let width = maxX - minX
+    let height = maxY - minY
+    guard width >= minimumCropFraction, height >= minimumCropFraction,
+      width < 1 || height < 1
+    else { return nil }
+    return CGRect(x: minX, y: minY, width: width, height: height)
   }
 
   deinit {
     if let pickerObserver {
       picker.remove(pickerObserver)
     }
-    picker.isActive = false
+    sourceMonitorTask?.cancel()
+    if holdsPickerActivation {
+      // The activation count is main-actor state; deinit is nonisolated.
+      Task { @MainActor in
+        CaptureSession.adjustPickerActivations(by: -1)
+      }
+    }
     let center = NSWorkspace.shared.notificationCenter
     for token in workspaceObserverTokens {
       center.removeObserver(token)
@@ -802,6 +1195,29 @@ private struct PendingSource {
   let filter: SCContentFilter
   let title: String
   let operationID: UInt64
+}
+
+/// A `start(filter:title:)` request that arrived while a stop was in flight.
+private struct PendingStart {
+  let filter: SCContentFilter
+  let title: String
+}
+
+/// The stream properties that can change while capturing. A stream records
+/// the last settings it accepted so live updates are issued only on change.
+private struct StreamSettings: Equatable {
+  let outputSize: CGSize
+  let frameRate: FrameRate
+  /// Normalized region `sourceRect` was derived from; `nil` when uncropped.
+  let crop: CGRect?
+  /// Window points, top-left origin; `nil` captures the whole window.
+  let sourceRect: CGRect?
+}
+
+/// A picker sheet a session presented, until the picker reports back.
+private struct PickerPresentation {
+  /// Stream the sheet was presented for; `nil` for a fresh selection.
+  let stream: SCStream?
 }
 
 private final class GenerationBox: @unchecked Sendable {
@@ -854,7 +1270,15 @@ private final class StreamContext: @unchecked Sendable {
   let generationBox: GenerationBox
   let title: String
   let filter: SCContentFilter
-  var appliedOutputSize: CGSize
+  /// Window captured by this stream, used to detect that it closed.
+  let sourceWindowID: CGWindowID?
+  /// Source window size in points, refreshed by the source monitor and on
+  /// crop changes; the crop and output size are mapped onto it.
+  var windowSize: CGSize
+  /// Settings the stream currently runs with (initial or last live update).
+  var appliedSettings: StreamSettings
+  /// `onSourceWindowClosed` fires at most once per stream.
+  var sourceClosedReported = false
   var outputAdded = false
   var startRequested = false
   var started = false
@@ -872,7 +1296,9 @@ private final class StreamContext: @unchecked Sendable {
     generationBox: GenerationBox,
     title: String,
     filter: SCContentFilter,
-    appliedOutputSize: CGSize
+    sourceWindowID: CGWindowID?,
+    windowSize: CGSize,
+    appliedSettings: StreamSettings
   ) {
     self.stream = stream
     self.output = output
@@ -880,7 +1306,9 @@ private final class StreamContext: @unchecked Sendable {
     self.generationBox = generationBox
     self.title = title
     self.filter = filter
-    self.appliedOutputSize = appliedOutputSize
+    self.sourceWindowID = sourceWindowID
+    self.windowSize = windowSize
+    self.appliedSettings = appliedSettings
   }
 }
 
