@@ -43,6 +43,10 @@ cp "$PROJECT_ROOT/Resources/Info.plist" "$APP_PATH/Contents/Info.plist"
 cp "$PROJECT_ROOT/Resources/AppIcon.icns" "$APP_PATH/Contents/Resources/AppIcon.icns"
 # Keep resources in the signed app's resource directory, which Bundle.module searches.
 ditto "$RESOURCE_BUNDLE" "$APP_PATH/Contents/Resources/$(basename "$RESOURCE_BUNDLE")"
+# Main-bundle lproj folders localize Info.plist strings (permission prompts) and advertise languages.
+for lproj in en.lproj ko.lproj; do
+    ditto "$PROJECT_ROOT/Resources/$lproj" "$APP_PATH/Contents/Resources/$lproj"
+done
 
 /usr/bin/codesign --force --deep --sign - "$APP_PATH"
 printf 'Built %s\n' "$APP_PATH"

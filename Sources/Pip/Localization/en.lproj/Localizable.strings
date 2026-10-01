@@ -1,0 +1,106 @@
+/* Status item menu */
+"menu.accessibilityLabel" = "PiP Menu";
+"menu.chooseWindow" = "Choose Window";
+"menu.showPanel" = "Show PiP";
+"menu.rotate" = "Rotate Video (Current %d°)";
+"menu.size" = "Size";
+"menu.sizeSmall" = "Small";
+"menu.sizeMedium" = "Medium";
+"menu.sizeLarge" = "Large";
+"menu.sizeCustom" = "Custom…";
+"menu.stop" = "Stop";
+"menu.quit" = "Quit";
+
+/* Renderer */
+"renderer.unavailable" = "Unable to start the renderer.";
+"renderer.error" = "Renderer error: %@";
+
+/* Floating panel */
+"panel.accessibilityLabel" = "Picture in Picture";
+"panel.chooseWindow" = "Choose Window";
+"panel.close" = "Close";
+"panel.apply" = "Apply";
+"panel.cancel" = "Cancel";
+"panel.video" = "Live View";
+"panel.status" = "Status";
+"panel.width" = "Width";
+"panel.height" = "Height";
+
+/* Panel status presentation */
+"state.idle" = "Choose a window";
+"state.selecting" = "Choosing window…";
+"state.starting" = "Starting…";
+"state.running" = "Live: %@";
+"state.paused" = "Paused";
+"state.pausedReason" = "Paused: %@";
+"state.stopped" = "Stopped";
+"state.stoppedReason" = "Stopped: %@";
+"state.error" = "Error";
+"state.failedReason" = "Failed: %@";
+
+/* Capture session state reasons */
+"capture.untitledWindow" = "Window";
+"capture.stopped" = "Stopped";
+"capture.ended" = "Capture stopped";
+"capture.paused" = "Capture paused";
+"capture.screenUnavailable" = "Screen unavailable";
+"capture.sessionInactive" = "Session is inactive";
+"capture.unavailable" = "Capture unavailable";
+"capture.pickerUnavailable" = "Window picker unavailable";
+"capture.selectionUnavailable" = "Window selection unavailable";
+"capture.sourceClosed" = "Source window closed";
+
+"menu.selectRegion" = "Select Region…";
+"menu.resetRegion" = "Reset Region";
+"menu.frameRate" = "Frame Rate";
+"menu.frameRateValue" = "%d fps";
+"menu.opacity" = "Opacity";
+"menu.opacityValue" = "%d%%";
+"menu.clickThrough" = "Click-Through";
+"menu.settings" = "Settings…";
+"menu.loadingWindows" = "Loading…";
+"menu.noWindows" = "No Windows Available";
+"menu.windowRegion" = "%@ — Select Region";
+"menu.allowScreenRecording" = "Allow Screen Recording…";
+"menu.useSystemPicker" = "Use System Picker…";
+"menu.newPiP" = "New PiP";
+"menu.closePiP" = "Close PiP";
+"menu.closeAll" = "Close All";
+"menu.emptyPiP" = "Empty";
+"menu.pipItem" = "%d. %@";
+
+"settings.title" = "Settings";
+"settings.launchAtLogin" = "Launch at Login";
+"settings.launchAtLoginFailed" = "Couldn’t change the login item: %@";
+"settings.loginItemNeedsApproval" = "Pip needs your approval in System Settings › Login Items.";
+"settings.openLoginItems" = "Open Login Items";
+"settings.section.pip" = "Picture in Picture";
+"settings.autoClose" = "Close PiP when the source window closes";
+"settings.defaultFrameRate" = "Default frame rate";
+"settings.defaultOpacity" = "Default opacity";
+"settings.section.shortcuts" = "Shortcuts";
+"settings.clickThroughShortcut" = "Toggle click-through";
+"settings.version" = "Version %@";
+
+"panel.crop" = "Select Region";
+"panel.controls" = "Controls";
+"panel.clickThrough" = "Click-Through On";
+
+"crop.hint" = "Drag to select an area";
+"crop.apply" = "Apply";
+"crop.reset" = "Full Window";
+"crop.cancel" = "Cancel";
+"crop.accessibilityLabel" = "Region Selection";
+
+"windowList.header" = "WINDOWS";
+"windowList.accessibilityLabel" = "Window List";
+"windowList.refresh" = "Refresh";
+"windowList.pickWindow" = "Show Window";
+"windowList.pickRegion" = "Select Region";
+"windowList.systemPicker" = "Use System Picker…";
+"windowList.loading" = "Loading windows…";
+"windowList.empty" = "No windows available";
+
+"permission.title" = "Screen Recording Required";
+"permission.body" = "Allow Screen Recording to list windows here. You can still use the system picker without it.";
+"permission.open" = "Open System Settings";
