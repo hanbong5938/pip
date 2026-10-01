@@ -5,6 +5,8 @@
 선택한 macOS 앱 창을 항상 위에 떠 있는 작은 PiP(화면 속 화면) 창으로 보여주는 네이티브 macOS 앱입니다.
 ScreenCaptureKit으로 창을 캡처하고 Metal로 렌더링합니다.
 
+웹사이트: <https://hanbong5938.github.io/pip/ko/>
+
 > [!WARNING]
 > 실험적 프리뷰입니다. 원본 앱이 다른 데스크톱(Space)에서 렌더링을 멈추면 PiP 화면도 멈춥니다. 자세한 내용은 [알려진 제한](#알려진-제한)을 참고하세요.
 
@@ -169,6 +171,7 @@ Resources/{en,ko}.lproj/            # 현지화된 InfoPlist.strings
 Resources/AppIcon.icns              # 앱 아이콘(생성물)
 scripts/build-app.sh                # .app 번들 빌드 스크립트
 scripts/make-icon.swift             # 앱 아이콘 생성 스크립트
+docs/                               # GitHub Pages 웹사이트 (en, ko/)
 ```
 
 ## 알려진 제한
