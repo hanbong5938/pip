@@ -33,6 +33,8 @@ final class CaptureSession {
   private var lastWorkspaceTransitionID: UInt64 = 0
   private var userStopped = false
   private var selectionRequestedAfterStop = false
+  private var targetOutputSize: CGSize?
+  private var outputSizeUpdateTask: Task<Void, Never>?
 
   init(
     onFrame: @escaping @Sendable (CaptureFrame) -> Void,
@@ -131,6 +133,66 @@ final class CaptureSession {
     if selectionRequestedAfterStop {
       selectionRequestedAfterStop = false
       chooseWindow()
+    }
+  }
+
+  /// Sets the maximum capture output size in pixels. The stream output fits
+  /// inside this size without exceeding the source window's native pixels.
+  func updateOutputSize(_ pixelSize: CGSize) {
+    guard pixelSize.width.isFinite, pixelSize.height.isFinite,
+      pixelSize.width > 0, pixelSize.height > 0
+    else { return }
+    let target = CGSize(
+      width: max(pixelSize.width.rounded(), 1),
+      height: max(pixelSize.height.rounded(), 1)
+    )
+    guard target != targetOutputSize else { return }
+    targetOutputSize = target
+    applyOutputSizeIfNeeded()
+  }
+
+  private func applyOutputSizeIfNeeded() {
+    guard outputSizeUpdateTask == nil,
+      let context = currentStream,
+      context.started,
+      !context.stopSignaled,
+      outputSize(for: context.filter) != context.appliedOutputSize
+    else { return }
+
+    outputSizeUpdateTask = Task { @MainActor [weak self] in
+      guard let self else { return }
+      await self.drainOutputSizeUpdates()
+    }
+  }
+
+  /// Applies the latest target to the current stream, one update at a time.
+  /// Targets that arrive while an update is in flight are picked up by the
+  /// next loop iteration; a stopping or not-yet-started stream ends the loop.
+  private func drainOutputSizeUpdates() async {
+    defer { outputSizeUpdateTask = nil }
+
+    var failedUpdate: (context: StreamContext, size: CGSize)?
+    while let context = currentStream,
+      context.started,
+      !context.stopSignaled
+    {
+      let configuration = makeConfiguration(for: context.filter)
+      let size = CGSize(width: configuration.width, height: configuration.height)
+      guard size != context.appliedOutputSize else { return }
+      if let failedUpdate, failedUpdate.context === context, failedUpdate.size == size {
+        return
+      }
+
+      do {
+        try await context.stream.updateConfiguration(configuration)
+      } catch {
+        // The stream keeps running with its previous configuration.
+        failedUpdate = (context, size)
+        continue
+      }
+      failedUpdate = nil
+      guard currentStream === context else { continue }
+      context.appliedOutputSize = size
     }
   }
 
@@ -359,6 +421,7 @@ final class CaptureSession {
     }
 
     let configuration = makeConfiguration(for: source.filter)
+    let appliedOutputSize = CGSize(width: configuration.width, height: configuration.height)
     let generationBox = GenerationBox(streamGeneration)
     let output = StreamOutputBridge(
       generationBox: generationBox,
@@ -394,7 +457,9 @@ final class CaptureSession {
       output: output,
       delegate: delegate,
       generationBox: generationBox,
-      title: source.title
+      title: source.title,
+      filter: source.filter,
+      appliedOutputSize: appliedOutputSize
     )
     currentStream = context
 
@@ -434,6 +499,7 @@ final class CaptureSession {
         frameGate.resume(context.generation)
         publish(.running(source.title))
       }
+      applyOutputSizeIfNeeded()
     } catch {
       await stop(context, intentionally: true)
       if currentStream === context {
@@ -449,16 +515,23 @@ final class CaptureSession {
     }
   }
 
-  private func makeConfiguration(for filter: SCContentFilter) -> SCStreamConfiguration {
+  private func outputSize(for filter: SCContentFilter) -> CGSize {
     let sourceRect = filter.contentRect
     let pointScale = max(CGFloat(filter.pointPixelScale), 1)
     let sourceWidth = max(sourceRect.width * pointScale, 1)
     let sourceHeight = max(sourceRect.height * pointScale, 1)
-    let scale = min(1, min(1280 / sourceWidth, 720 / sourceHeight))
+    let target = targetOutputSize ?? CGSize(width: 1280, height: 720)
+    let scale = min(1, target.width / sourceWidth, target.height / sourceHeight)
 
-    let width = max(Int((sourceWidth * scale).rounded()), 1)
-    let height = max(Int((sourceHeight * scale).rounded()), 1)
+    let width = max((sourceWidth * scale).rounded(), 1)
+    let height = max((sourceHeight * scale).rounded(), 1)
+    return CGSize(width: width, height: height)
+  }
 
+  private func makeConfiguration(for filter: SCContentFilter) -> SCStreamConfiguration {
+    let size = outputSize(for: filter)
+    let width = Int(size.width)
+    let height = Int(size.height)
     let configuration = SCStreamConfiguration()
     configuration.width = width
     configuration.height = height
@@ -780,6 +853,8 @@ private final class StreamContext: @unchecked Sendable {
   let delegate: StreamDelegateBridge
   let generationBox: GenerationBox
   let title: String
+  let filter: SCContentFilter
+  var appliedOutputSize: CGSize
   var outputAdded = false
   var startRequested = false
   var started = false
@@ -795,13 +870,17 @@ private final class StreamContext: @unchecked Sendable {
     output: StreamOutputBridge,
     delegate: StreamDelegateBridge,
     generationBox: GenerationBox,
-    title: String
+    title: String,
+    filter: SCContentFilter,
+    appliedOutputSize: CGSize
   ) {
     self.stream = stream
     self.output = output
     self.delegate = delegate
     self.generationBox = generationBox
     self.title = title
+    self.filter = filter
+    self.appliedOutputSize = appliedOutputSize
   }
 }
 

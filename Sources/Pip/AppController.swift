@@ -22,6 +22,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     NSApp.setActivationPolicy(.accessory)
     createRendererAndPanel()
     createCaptureSession()
+    if let panelController {
+      updateCaptureOutputSize(videoPixelSize: panelController.videoPixelSize)
+    }
     createStatusItem()
 
     if let rendererFailure {
@@ -93,7 +96,16 @@ final class AppController: NSObject, NSApplicationDelegate {
     panel.onClose = { [weak self] in
       self?.panelDidClose()
     }
+    panel.onVideoPixelSizeChange = { [weak self] size in
+      self?.updateCaptureOutputSize(videoPixelSize: size)
+    }
     panelController = panel
+
+    if let candidateRenderer {
+      candidateRenderer.onContentSizeChange = { [weak self] size in
+        self?.panelController?.setSourceAspect(size)
+      }
+    }
   }
 
   private func createCaptureSession() {
@@ -141,6 +153,41 @@ final class AppController: NSObject, NSApplicationDelegate {
     )
     menu.addItem(rotateItem)
     rotateMenuItem = rotateItem
+
+    let sizeMenu = NSMenu()
+    sizeMenu.autoenablesItems = false
+    sizeMenu.addItem(
+      makeMenuItem(
+        title: "작게",
+        action: #selector(applySmallSizeFromMenu(_:)),
+        identifier: "pip.menu.size-small"
+      ))
+    sizeMenu.addItem(
+      makeMenuItem(
+        title: "보통",
+        action: #selector(applyMediumSizeFromMenu(_:)),
+        identifier: "pip.menu.size-medium"
+      ))
+    sizeMenu.addItem(
+      makeMenuItem(
+        title: "크게",
+        action: #selector(applyLargeSizeFromMenu(_:)),
+        identifier: "pip.menu.size-large"
+      ))
+    sizeMenu.addItem(.separator())
+    sizeMenu.addItem(
+      makeMenuItem(
+        title: "사용자 지정…",
+        action: #selector(customSizeFromMenu(_:)),
+        identifier: "pip.menu.size-custom"
+      ))
+    let sizeItem = NSMenuItem(title: "크기", action: nil, keyEquivalent: "")
+    sizeItem.identifier = NSUserInterfaceItemIdentifier("pip.menu.size")
+    sizeItem.setAccessibilityLabel("크기")
+    sizeItem.setAccessibilityIdentifier("pip.menu.size")
+    sizeItem.submenu = sizeMenu
+    menu.addItem(sizeItem)
+
     menu.addItem(.separator())
     menu.addItem(
       makeMenuItem(
@@ -184,16 +231,39 @@ final class AppController: NSObject, NSApplicationDelegate {
   // survives choosing another window.
   @objc private func rotateFromMenu(_ sender: Any?) {
     guard !isTerminating else { return }
-    let next = rotation.next
-    if next.swapsDimensions != rotation.swapsDimensions {
-      panelController?.swapVideoOrientation()
-    }
+    let previous = rotation
+    let next = previous.next
+    // Update the rotation first: the panel swap emits a new video pixel size,
+    // and the capture target must be derived with the new orientation.
     rotation = next
+    if next.swapsDimensions != previous.swapsDimensions {
+      panelController?.swapVideoOrientation()
+      if let panelController {
+        updateCaptureOutputSize(videoPixelSize: panelController.videoPixelSize)
+      }
+    }
     renderer?.setRotation(next)
 
     let title = Self.rotateMenuTitle(for: next)
     rotateMenuItem?.title = title
     rotateMenuItem?.setAccessibilityLabel(title)
+  }
+
+  @objc private func applySmallSizeFromMenu(_ sender: Any?) {
+    applyPreset(videoWidth: 360)
+  }
+
+  @objc private func applyMediumSizeFromMenu(_ sender: Any?) {
+    applyPreset(videoWidth: 480)
+  }
+
+  @objc private func applyLargeSizeFromMenu(_ sender: Any?) {
+    applyPreset(videoWidth: 720)
+  }
+
+  @objc private func customSizeFromMenu(_ sender: Any?) {
+    guard !isTerminating else { return }
+    panelController?.beginCustomSizeEditing()
   }
 
   @objc private func stopCaptureFromMenu(_ sender: Any?) {
@@ -204,6 +274,20 @@ final class AppController: NSObject, NSApplicationDelegate {
   @objc private func quitFromMenu(_ sender: Any?) {
     guard !isTerminating else { return }
     NSApp.terminate(nil)
+  }
+
+  /// The capture stream is never rotated, so a quarter-turn display rotation
+  /// maps the panel's video width onto the source height and vice versa.
+  private func updateCaptureOutputSize(videoPixelSize size: CGSize) {
+    let target =
+      rotation.swapsDimensions ? CGSize(width: size.height, height: size.width) : size
+    captureSession?.updateOutputSize(target)
+  }
+
+  private func applyPreset(videoWidth: CGFloat) {
+    guard !isTerminating else { return }
+    panelController?.show()
+    panelController?.applyPreset(videoWidth: videoWidth)
   }
 
   private func chooseWindow() {
@@ -233,6 +317,13 @@ final class AppController: NSObject, NSApplicationDelegate {
   }
 
   private func captureStateChanged(_ state: CaptureState) {
+    switch state {
+    case .idle, .stopped, .failed:
+      panelController?.setSourceAspect(nil)
+    case .selecting, .starting, .running, .suspended:
+      break
+    }
+
     if let rendererFailure {
       panelController?.update(state: .failed(rendererFailure))
     } else {

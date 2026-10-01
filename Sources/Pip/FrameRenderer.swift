@@ -109,6 +109,12 @@ final class FrameRenderer: @unchecked Sendable {
   @MainActor private let samplerState: MTLSamplerState
   @MainActor private let delegateBridge: FrameRendererDelegateBridge
   @MainActor private var rotation: VideoRotation = .none
+  @MainActor private var reportedContentSize: (generation: UInt64, size: CGSize)?
+
+  /// Called on the main actor, outside the draw pass, whenever the captured
+  /// content's pixel size changes or a new source generation starts. The size
+  /// is in source orientation; display rotation is not applied.
+  @MainActor var onContentSizeChange: ((CGSize) -> Void)?
 
   @MainActor
   init() throws {
@@ -488,6 +494,10 @@ final class FrameRenderer: @unchecked Sendable {
 
     let sourceWidth = maxX - minX
     let sourceHeight = maxY - minY
+    reportContentSizeIfChanged(
+      CGSize(width: sourceWidth, height: sourceHeight),
+      generation: frame.generation
+    )
     // A quarter-turn rotation displays the source with its width and height
     // exchanged, so the aspect fit uses the rotated dimensions. The UV corner
     // math below stays unrotated; the vertex shader applies the rotation.
@@ -530,6 +540,20 @@ final class FrameRenderer: @unchecked Sendable {
       texture: sourceTexture
     )
     return (resources, uniforms)
+  }
+
+  @MainActor
+  private func reportContentSizeIfChanged(_ size: CGSize, generation: UInt64) {
+    if let reported = reportedContentSize,
+      reported.generation == generation, reported.size == size
+    {
+      return
+    }
+    reportedContentSize = (generation, size)
+    // Deliver after the current draw pass so observers may resize the window.
+    DispatchQueue.main.async { @MainActor [weak self] in
+      self?.onContentSizeChange?(size)
+    }
   }
 
   private func completeDraw() {
