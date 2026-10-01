@@ -32,6 +32,11 @@ final class FloatingPanelController: NSObject {
   private let chooseWindowButton: NSButton
   private let closeButton: NSButton
   private var closeCallbackDelivered = false
+  /// Unclamped video-area size and panel center requested by the last
+  /// rotation swap, paired with the frame that swap produced. The size stays
+  /// valid while the panel keeps that size and the center while it keeps that
+  /// whole frame; any other resize or move falls back to measuring.
+  private var rotationSizing: (videoSize: NSSize, center: NSPoint, appliedFrame: NSRect)?
 
   init(videoView: NSView) {
     self.videoView = videoView
@@ -87,22 +92,42 @@ final class FloatingPanelController: NSObject {
 
   /// Exchanges the width and height of the video area for a 90°/270° display
   /// rotation, keeping the panel's chrome, center, and on-screen placement.
+  /// The requested size is remembered before the minSize clamp so that
+  /// rotating back restores the original panel size exactly.
   /// Works while the panel is hidden; only the frame is updated then.
   func swapVideoOrientation() {
     panel.layoutIfNeeded()
 
     let currentFrame = panel.frame
-    let videoSize = videoContainer.frame.size
-    let chromeWidth = currentFrame.width - videoSize.width
-    let chromeHeight = currentFrame.height - videoSize.height
+    let measuredVideoSize = videoContainer.frame.size
+    guard measuredVideoSize.width > 0, measuredVideoSize.height > 0 else {
+      rotationSizing = nil
+      return
+    }
+    let chromeWidth = currentFrame.width - measuredVideoSize.width
+    let chromeHeight = currentFrame.height - measuredVideoSize.height
+
+    let baseVideoSize: NSSize
+    if let rotationSizing, rotationSizing.appliedFrame.size == currentFrame.size {
+      baseVideoSize = rotationSizing.videoSize
+    } else {
+      baseVideoSize = measuredVideoSize
+    }
+    let center: NSPoint
+    if let rotationSizing, rotationSizing.appliedFrame == currentFrame {
+      center = rotationSizing.center
+    } else {
+      center = NSPoint(x: currentFrame.midX, y: currentFrame.midY)
+    }
+    let videoSize = NSSize(width: baseVideoSize.height, height: baseVideoSize.width)
     let size = NSSize(
-      width: max(chromeWidth + videoSize.height, panel.minSize.width),
-      height: max(chromeHeight + videoSize.width, panel.minSize.height)
+      width: max(chromeWidth + videoSize.width, panel.minSize.width),
+      height: max(chromeHeight + videoSize.height, panel.minSize.height)
     )
 
     var frame = NSRect(
-      x: currentFrame.midX - size.width / 2,
-      y: currentFrame.midY - size.height / 2,
+      x: center.x - size.width / 2,
+      y: center.y - size.height / 2,
       width: size.width,
       height: size.height
     )
@@ -111,6 +136,7 @@ final class FloatingPanelController: NSObject {
     }
 
     panel.setFrame(frame, display: panel.isVisible, animate: false)
+    rotationSizing = (videoSize, center, panel.frame)
     requestVideoRedraw()
   }
 
