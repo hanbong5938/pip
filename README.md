@@ -7,6 +7,8 @@ Windows are captured with ScreenCaptureKit and rendered with Metal.
 
 Website: <https://hanbong5938.github.io/pip/>
 
+Detailed documentation: [Korean Wiki](https://github.com/hanbong5938/pip/wiki) — installation, usage, settings, troubleshooting, building, and architecture
+
 > [!WARNING]
 > Experimental preview. If the source app stops rendering while it is on another desktop (Space), the PiP panel freezes too. See [Known limitations](#known-limitations).
 

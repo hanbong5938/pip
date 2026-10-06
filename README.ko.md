@@ -7,6 +7,8 @@ ScreenCaptureKit으로 창을 캡처하고 Metal로 렌더링합니다.
 
 웹사이트: <https://hanbong5938.github.io/pip/ko/>
 
+상세 문서: [한국어 Wiki](https://github.com/hanbong5938/pip/wiki) — 설치, 사용법, 설정, 문제 해결, 빌드 및 구조
+
 > [!WARNING]
 > 실험적 프리뷰입니다. 원본 앱이 다른 데스크톱(Space)에서 렌더링을 멈추면 PiP 화면도 멈춥니다. 자세한 내용은 [알려진 제한](#알려진-제한)을 참고하세요.
 
