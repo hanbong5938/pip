@@ -83,6 +83,22 @@ enum WindowCatalog {
     return (SCContentFilter(desktopIndependentWindow: scWindow), window)
   }
 
+  /// Resolves a previously accepted source only after a fresh shareable-content
+  /// lookup. A reused window number or a relaunched owning process is not the
+  /// same source, even when its title happens to match.
+  static func makeFilter(
+    for source: SourceIdentity
+  ) async throws -> (filter: SCContentFilter, window: CapturableWindow) {
+    let content = try await shareableContent(onScreenWindowsOnly: false)
+    guard source.isSameRunningApplication(),
+      let scWindow = content.windows.first(where: { $0.windowID == source.windowID }),
+      let window = capturableWindow(from: scWindow),
+      window.processID == source.processID,
+      window.bundleIdentifier == source.bundleIdentifier
+    else { throw WindowCatalogError.windowNotFound }
+    return (SCContentFilter(desktopIndependentWindow: scWindow), window)
+  }
+
   /// Cheap liveness check via the window server. Needs no Screen Recording
   /// permission because only the window number is inspected.
   static func windowExists(_ windowID: CGWindowID) -> Bool {

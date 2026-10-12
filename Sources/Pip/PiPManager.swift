@@ -1,21 +1,10 @@
 import AppKit
 import Foundation
 
-/// Owns every picture-in-picture, ordered by creation.
-///
-/// Invariants:
-/// - Once a PiP exists there is always at least one: closing the last
-///   remaining PiP stops its capture and only hides it, so "Show PiP" and
-///   reopen keep working. Closing any other PiP removes it.
-/// - A closed panel always has its capture stopped, so the only PiP whose
-///   panel can be hidden is that kept last one.
-/// - Each PiP holds a slot that keys its remembered frame: slot 0 autosaves
-///   as "pip.panel" (the single-PiP name, so existing frames carry over),
-///   slot n as "pip.panel.<n>". A removed PiP keeps its slot until its capture
-///   has stopped and it is released, so two live panels never share an
-///   autosave name; the lowest free slot is reused.
-/// - Click-through is app-wide: every existing and future PiP follows
-///   `isClickThrough`.
+/// Owns all PiPs, including hidden paused sessions. A terminal close removes
+/// a session unless it is the sole empty keeper; a hide never removes it.
+/// Slots stay reserved until retired renderers finish shutting down.
+/// Click-through remains an app-wide explicit setting.
 @MainActor
 final class PiPManager {
   private struct Entry {
@@ -47,13 +36,13 @@ final class PiPManager {
     entries.contains { $0.session === session }
   }
 
-  /// Shows a new PiP with the in-app window list, cascaded from the newest
-  /// visible panel unless its slot remembers a frame. A hidden sole PiP is
-  /// shown instead of adding a second one next to it.
+  /// Create a new PiP, reusing only a hidden, empty sole keeper.
   @discardableResult
-  func newSession() -> PiPSession? {
+  func newSession(show: Bool = true) -> PiPSession? {
     guard !isShuttingDown else { return nil }
-    if entries.count == 1, let only = entries.first?.session, !only.isPanelOpen {
+    if show, entries.count == 1, let only = entries.first?.session,
+      !only.isPanelOpen, !only.hasRetainedSetup, !only.hasCaptureWork
+    {
       only.show()
       return only
     }
@@ -71,27 +60,23 @@ final class PiPManager {
       self.panelClosed(session)
     }
     entries.append(Entry(session: session, slot: slot))
-    session.show()
+    if show { session.show() }
     return session
   }
 
-  /// Closes one PiP through its panel's close path (stops the capture, then
-  /// removes it unless it is the last one).
+  /// Closes one PiP terminally; a hidden session still closes.
   func close(_ session: PiPSession) {
     guard !isShuttingDown, contains(session) else { return }
     session.close()
   }
 
-  /// Stops and removes every PiP except the one with the lowest slot, which
-  /// is stopped and hidden.
+  /// Closes all PiPs, including hidden sessions; installs a fresh empty keeper.
   func closeAll() {
-    guard !isShuttingDown, let keeper = entries.min(by: { $0.slot < $1.slot }) else { return }
-    let others = entries.filter { $0.session !== keeper.session }
-    entries = [keeper]
-    for entry in others {
-      retire(entry)
-    }
-    keeper.session.close()
+    guard !isShuttingDown, !entries.isEmpty else { return }
+    let old = entries
+    entries = []
+    for entry in old { retire(entry) }
+    _ = newSession(show: false)
   }
 
   /// Brings back every panel (reopen); creates one if none exists.
@@ -143,16 +128,17 @@ final class PiPManager {
     }
   }
 
-  /// Runs after the panel's close path has requested the capture stop.
+  /// Runs once after a terminal close, including a hidden close.
   private func panelClosed(_ session: PiPSession) {
-    guard !isShuttingDown, entries.count > 1,
+    guard !isShuttingDown,
       let index = entries.firstIndex(where: { $0.session === session })
     else { return }
+    let wasLast = entries.count == 1
     retire(entries.remove(at: index))
+    if wasLast { _ = newSession(show: false) }
   }
 
-  /// Hides the panel (stopping the capture) and releases the PiP once the
-  /// stop has completed and its renderer is shut down.
+  /// Releases a terminally closed PiP once its stop and renderer shutdown finish.
   private func retire(_ entry: Entry) {
     let session = entry.session
     let slot = entry.slot

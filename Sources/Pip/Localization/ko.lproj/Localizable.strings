@@ -57,6 +57,9 @@
 "capture.pickerUnavailable" = "창 선택기를 사용할 수 없습니다";
 "capture.selectionUnavailable" = "창 선택을 사용할 수 없습니다";
 "capture.sourceClosed" = "원본 창이 닫혔습니다";
+"capture.hiddenStopping" = "숨김 — 캡처 중지 중…";
+"capture.hiddenPaused" = "숨김 — 캡처 꺼짐";
+"capture.pausedByUser" = "캡처 꺼짐 — 직접 다시 시작하세요";
 
 "menu.selectRegion" = "영역 선택…";
 "menu.resetRegion" = "영역 초기화";
@@ -69,13 +72,22 @@
 "menu.loadingWindows" = "불러오는 중…";
 "menu.noWindows" = "사용 가능한 창 없음";
 "menu.windowRegion" = "%@ — 영역 선택";
-"menu.allowScreenRecording" = "화면 기록 허용…";
-"menu.useSystemPicker" = "시스템 선택기 사용…";
+"menu.allowScreenRecording" = "창 목록 사용…";
+"menu.useSystemPicker" = "시스템 선택기로 창 선택…";
 "menu.newPiP" = "새 PiP";
 "menu.closePiP" = "PiP 닫기";
 "menu.closeAll" = "모두 닫기";
 "menu.emptyPiP" = "비어 있음";
 "menu.pipItem" = "%d. %@";
+"menu.hidePanel" = "PiP 숨기기";
+"menu.resumeCapture" = "캡처 재개";
+"menu.openSourceApp" = "원본 앱으로 이동";
+"menu.rememberSetup" = "현재 설정 기억";
+"menu.restoreSetup" = "저장된 설정 복원…";
+"menu.forgetSetup" = "저장된 설정 삭제";
+"menu.applySavedSetup" = "저장된 영역/설정 적용";
+"menu.applyPreviousRegion" = "이전 영역 적용…";
+
 
 "settings.title" = "설정";
 "settings.launchAtLogin" = "로그인 시 실행";
@@ -105,10 +117,37 @@
 "windowList.refresh" = "새로 고침";
 "windowList.pickWindow" = "창 보기";
 "windowList.pickRegion" = "영역 선택";
-"windowList.systemPicker" = "시스템 선택기 사용…";
+"windowList.systemPicker" = "시스템 선택기로 창 선택…";
 "windowList.loading" = "창 목록을 불러오는 중…";
 "windowList.empty" = "표시할 창이 없습니다";
+"windowList.retry" = "다시 시도";
+"windowList.pausedTitle" = "캡처 꺼짐";
+"windowList.pausedBody" = "%@의 캡처가 꺼졌습니다. 다시 캡처하려면 직접 재개하거나 다른 창을 선택하세요. 다른 Space에 보이는 원본 창도 화면 갱신이 멈출 수 있습니다.";
 
-"permission.title" = "화면 기록 권한 필요";
-"permission.body" = "여기에 창 목록을 표시하려면 화면 기록을 허용하세요. 권한 없이도 시스템 선택기는 사용할 수 있습니다.";
-"permission.open" = "시스템 설정 열기";
+
+"permission.title" = "창 목록 접근 권한(선택 사항)";
+"permission.body" = "화면 기록 권한을 허용하면 Pip에서 창 목록을 볼 수 있습니다. 전체 창 목록 권한을 켜지 않아도 시스템 선택기로 창을 선택할 수 있습니다.";
+"permission.open" = "창 목록 사용…";
+
+/* 저장된 설정은 사용자가 직접 창을 선택하고 적용해야 합니다 */
+"setup.confirmTitle" = "저장된 설정을 적용할까요?";
+"setup.confirmMessage" = "%@에 저장된 영역, 프레임 레이트, 불투명도, 회전을 적용할까요? 같은 앱이라도 표시 내용이 다를 수 있으므로 미리 보기를 먼저 확인하세요. Pip은 영상만 캡처하며 오디오를 캡처하거나 원본을 조작하지 않습니다.";
+"setup.mismatchMessage" = "%@의 앱 또는 창 크기가 저장된 설정과 일치하지 않습니다. 저장된 영역에 다른 내용이 보이거나 해당 창에 맞지 않을 수 있습니다.";
+"setup.apply" = "저장된 영역/설정 적용";
+"setup.cancel" = "취소";
+"setup.restoreSelect" = "저장된 설정을 적용하기 전에 미리 볼 창을 선택하세요.";
+"setup.previewReady" = "미리 보기가 준비되었습니다. 확인 후 저장된 영역과 설정을 적용하세요.";
+"setup.remembered" = "현재 설정을 이 Mac에 저장했습니다. 창 접근 권한은 저장되지 않습니다.";
+"setup.forgotten" = "저장된 설정을 삭제했습니다.";
+"setup.resumeRegionConfirmTitle" = "이전 영역을 적용할까요?";
+"setup.resumeRegionConfirmMessage" = "원본 창 크기가 변경되었습니다. %@에 이전 영역을 적용할까요? 먼저 전체 창을 미리 보세요. 이전 영역에 다른 내용이 보이거나 창에 맞지 않을 수 있습니다. Pip은 영상만 캡처하며 오디오를 캡처하거나 원본을 조작하지 않습니다.";
+"setup.applyPreviousRegion" = "이전 영역 적용";
+
+/* 원본 선택 오류: 실행 중인 캡처는 유지됩니다 */
+"selectionIssue.catalogUnavailable" = "창 목록을 불러올 수 없습니다. 다시 시도하거나 시스템 선택기를 사용하세요.";
+"selectionIssue.sourceUnavailable" = "해당 원본 창을 더 이상 사용할 수 없습니다. 창을 다시 선택하세요.";
+"selectionIssue.selectionUnavailable" = "창 선택을 완료할 수 없습니다. 다시 시도하세요.";
+"selectionIssue.pickerUnavailable" = "시스템 선택기를 사용할 수 없습니다. 다시 시도하거나 선택 사항인 창 목록을 사용하세요.";
+"selectionIssue.pickerBusy" = "다른 PiP에서 시스템 선택기를 사용 중입니다. 해당 선택을 먼저 마치세요.";
+"selectionIssue.sourceAppUnavailable" = "원본 앱을 더 이상 사용할 수 없습니다. 창을 다시 선택하세요.";
+"selectionIssue.setupUnavailable" = "저장된 설정을 사용할 수 없거나 올바르지 않습니다. 현재 설정을 저장하여 교체하세요.";

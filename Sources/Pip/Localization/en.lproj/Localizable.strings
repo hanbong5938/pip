@@ -57,6 +57,9 @@
 "capture.pickerUnavailable" = "Window picker unavailable";
 "capture.selectionUnavailable" = "Window selection unavailable";
 "capture.sourceClosed" = "Source window closed";
+"capture.hiddenStopping" = "Hidden — stopping capture…";
+"capture.hiddenPaused" = "Hidden — capture off";
+"capture.pausedByUser" = "Capture off — resume manually";
 
 "menu.selectRegion" = "Select Region…";
 "menu.resetRegion" = "Reset Region";
@@ -69,13 +72,22 @@
 "menu.loadingWindows" = "Loading…";
 "menu.noWindows" = "No Windows Available";
 "menu.windowRegion" = "%@ — Select Region";
-"menu.allowScreenRecording" = "Allow Screen Recording…";
-"menu.useSystemPicker" = "Use System Picker…";
+"menu.allowScreenRecording" = "Enable Window List…";
+"menu.useSystemPicker" = "Choose with System Picker…";
 "menu.newPiP" = "New PiP";
 "menu.closePiP" = "Close PiP";
 "menu.closeAll" = "Close All";
 "menu.emptyPiP" = "Empty";
 "menu.pipItem" = "%d. %@";
+"menu.hidePanel" = "Hide PiP";
+"menu.resumeCapture" = "Resume Capture";
+"menu.openSourceApp" = "Open Source App";
+"menu.rememberSetup" = "Remember Current Setup";
+"menu.restoreSetup" = "Restore Saved Setup…";
+"menu.forgetSetup" = "Forget Saved Setup";
+"menu.applySavedSetup" = "Apply Saved Region/Settings";
+"menu.applyPreviousRegion" = "Apply Previous Region…";
+
 
 "settings.title" = "Settings";
 "settings.launchAtLogin" = "Launch at Login";
@@ -105,10 +117,37 @@
 "windowList.refresh" = "Refresh";
 "windowList.pickWindow" = "Show Window";
 "windowList.pickRegion" = "Select Region";
-"windowList.systemPicker" = "Use System Picker…";
+"windowList.systemPicker" = "Choose with System Picker…";
 "windowList.loading" = "Loading windows…";
 "windowList.empty" = "No windows available";
+"windowList.retry" = "Try Again";
+"windowList.pausedTitle" = "Capture Off";
+"windowList.pausedBody" = "Capture is off for %@. Resume explicitly to capture again, or choose another window. A source visible in another Space may still stop rendering.";
 
-"permission.title" = "Screen Recording Required";
-"permission.body" = "Allow Screen Recording to list windows here. You can still use the system picker without it.";
-"permission.open" = "Open System Settings";
+
+"permission.title" = "Window List Access (Optional)";
+"permission.body" = "Screen Recording access lets Pip list windows. You can choose a window with the system picker instead, without enabling the full window list.";
+"permission.open" = "Enable Window List…";
+
+/* Saved setup: selection and application are always explicit */
+"setup.confirmTitle" = "Apply Saved Setup?";
+"setup.confirmMessage" = "Apply the saved region, frame rate, opacity, and rotation to %@? Check the preview first: even the same app may display different content. Pip captures video only; it does not capture audio or control the source.";
+"setup.mismatchMessage" = "The app or window dimensions for %@ do not match the saved setup. The saved region may show different content or not fit this window.";
+"setup.apply" = "Apply Saved Region/Settings";
+"setup.cancel" = "Cancel";
+"setup.restoreSelect" = "Choose a window to preview before applying the saved setup.";
+"setup.previewReady" = "Preview ready. Apply the saved region and settings when you’re ready.";
+"setup.remembered" = "Current setup saved on this Mac. No window access is saved.";
+"setup.forgotten" = "Saved setup removed.";
+"setup.resumeRegionConfirmTitle" = "Apply Previous Region?";
+"setup.resumeRegionConfirmMessage" = "The source window size changed. Apply the previous region to %@? Preview the full window first: this region may now show different content or not fit. Pip captures video only, without audio or source controls.";
+"setup.applyPreviousRegion" = "Apply Previous Region";
+
+/* Nonfatal source selection notices */
+"selectionIssue.catalogUnavailable" = "The window list couldn’t be loaded. Try again or use the system picker.";
+"selectionIssue.sourceUnavailable" = "That source window is no longer available. Choose a window again.";
+"selectionIssue.selectionUnavailable" = "Window selection couldn’t be completed. Try again.";
+"selectionIssue.pickerUnavailable" = "The system picker is unavailable. Try again or enable the optional window list.";
+"selectionIssue.pickerBusy" = "The system picker is being used by another PiP. Finish that selection first.";
+"selectionIssue.sourceAppUnavailable" = "The source app is no longer available. Choose a window again.";
+"selectionIssue.setupUnavailable" = "The saved setup is unavailable or invalid. Save a current setup to replace it.";

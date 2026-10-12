@@ -7,6 +7,10 @@ import ScreenCaptureKit
 @MainActor
 final class CaptureSession {
   var onStateChange: ((CaptureState) -> Void)?
+  /// Published only for an accepted single-window source, before `.starting`.
+  var onSourceAccepted: ((SourceIdentity) -> Void)?
+  /// Nonfatal selection failures; cancellation never reports an issue.
+  var onSelectionIssue: ((SelectionIssue) -> Void)?
   /// Fired once per source when the captured window disappears. The session
   /// has already stopped the stream and published
   /// `.stopped(capture.sourceClosed)` when this runs.
@@ -15,13 +19,22 @@ final class CaptureSession {
   /// Capture rate applied to every stream of this session; changes apply live.
   private(set) var frameRate: FrameRate = .fps30
   /// Normalized region of the source window (0...1, top-left origin, source
-  /// orientation). `nil` captures the whole window. Every new source starts
-  /// uncropped because the region is meaningless for a different window. A
+  /// orientation). `nil` captures the whole window. A new source starts
+  /// uncropped unless an already verified resume supplies `initialCrop`. A
   /// region the stream rejects reverts to the last applied one, so this always
   /// describes what is captured once updates settle.
   private(set) var crop: CGRect?
   /// Window behind the current stream; `nil` while no stream exists.
   private(set) var sourceWindowID: CGWindowID?
+  /// Identity of the accepted source while capture is in flight or running.
+  /// A UI that needs this after stop must retain its own snapshot.
+  private(set) var sourceIdentity: SourceIdentity?
+  /// Unlike `CaptureState`, accounts for streams and pending starts even while
+  /// a selection sheet is temporarily showing `.selecting`.
+  var hasCaptureWork: Bool {
+    currentStream != nil || pendingSource != nil || replacementTask != nil
+      || startRequestedAfterStop != nil
+  }
 
   /// `SCContentSharingPicker.shared` is process-wide while sessions are
   /// per-PiP: the shared configuration is applied once, and `isActive` stays
@@ -88,6 +101,9 @@ final class CaptureSession {
   private let workspaceTransitionBox = TransitionBox()
   private var lastWorkspaceTransitionID: UInt64 = 0
   private var userStopped = false
+  /// True from immediate user invalidation until the async stop has released
+  /// the stream. A stale selection cannot start capture in that gap.
+  private var stopInvalidated = false
   private var selectionRequestedAfterStop = false
   private var startRequestedAfterStop: PendingStart?
   private var targetOutputSize: CGSize?
@@ -129,15 +145,18 @@ final class CaptureSession {
   }
 
   func chooseWindow() {
+    guard !stopInvalidated || stopTask != nil else { return }
     if stopTask != nil {
       startRequestedAfterStop = nil
       selectionRequestedAfterStop = true
       return
     }
     guard !selectionInProgress else { return }
-    // The shared picker shows one selection at a time; another session's
-    // open picker wins and this request is dropped.
-    if let presenter = Self.presentingSession, presenter !== self { return }
+    // The shared picker shows one selection at a time.
+    if let presenter = Self.presentingSession, presenter !== self {
+      onSelectionIssue?(.pickerBusy)
+      return
+    }
 
     userStopped = false
     selectionInProgress = true
@@ -159,30 +178,67 @@ final class CaptureSession {
   /// Starts capturing `filter` (or replaces the current source) without the
   /// system picker, through the same pipeline as a picker selection. Any
   /// picker selection this session has open is ended first.
-  func start(filter: SCContentFilter, title: String) {
+  func start(filter: SCContentFilter, title: String, initialCrop: CGRect? = nil) {
+    guard !stopInvalidated || stopTask != nil else { return }
+    if let initialCrop, !Self.isValidInitialCrop(initialCrop) {
+      onSelectionIssue?(.setupUnavailable)
+      return
+    }
     if stopTask != nil {
       selectionRequestedAfterStop = false
-      startRequestedAfterStop = PendingStart(filter: filter, title: title)
+      startRequestedAfterStop = PendingStart(
+        filter: filter, title: title, initialCrop: initialCrop
+      )
       return
     }
 
+    guard let identity = SourceIdentity.from(filter: filter) else {
+      onSelectionIssue?(.sourceUnavailable)
+      return
+    }
     userStopped = false
     let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
     acceptSource(
       filter: filter,
-      title: trimmedTitle.isEmpty ? L10n.string("capture.untitledWindow") : trimmedTitle
+      title: trimmedTitle.isEmpty ? L10n.string("capture.untitledWindow") : trimmedTitle,
+      identity: identity,
+      initialCrop: initialCrop
     )
   }
 
+  /// Immediately revoke capture work before scheduling an asynchronous stop.
+  /// The picker presentation remains owned until its callback arrives, but
+  /// its selection and every previously queued source can no longer win.
+  func invalidateForUserStop() {
+    userStopped = true
+    selectionInProgress = false
+    stateBeforeSelection = nil
+    sourceIdentity = nil
+    pendingSource = nil
+    startRequestedAfterStop = nil
+    selectionRequestedAfterStop = false
+    guard !stopInvalidated else {
+      updatePickerActivation()
+      return
+    }
+    stopInvalidated = true
+    operationID = nextOperationID()
+    workspaceInactive = false
+    streamInactive = false
+    frameSuspended = false
+    frameSuspensionRevision = nil
+    let stoppedGeneration = advanceGeneration()
+    frameGate.pause(stoppedGeneration)
+    updatePickerActivation()
+  }
+
   func stop() async {
+    invalidateForUserStop()
     if let stopTask {
       // A later stop supersedes a restart queued behind the in-flight one.
-      startRequestedAfterStop = nil
-      selectionRequestedAfterStop = false
       await stopTask.value
       return
     }
-
     let task: Task<Void, Never> = Task { @MainActor [weak self] in
       guard let self else { return }
       await self.performStop()
@@ -192,21 +248,10 @@ final class CaptureSession {
   }
 
   private func performStop() async {
-    userStopped = true
+    invalidateForUserStop()
     // An open sheet keeps `pickerPresentation` (and with it the presenting
     // slot and a picker activation) until the picker reports back; its
     // choice is then dropped because the session is stopped.
-    selectionInProgress = false
-    stateBeforeSelection = nil
-    pendingSource = nil
-    operationID = nextOperationID()
-    workspaceInactive = false
-    streamInactive = false
-    frameSuspended = false
-    frameSuspensionRevision = nil
-
-    let stoppedGeneration = advanceGeneration()
-    frameGate.pause(stoppedGeneration)
 
     if let replacementTask {
       await replacementTask.value
@@ -221,13 +266,14 @@ final class CaptureSession {
     if startRequestedAfterStop == nil {
       publish(.stopped(L10n.string("capture.stopped")))
     }
+    stopInvalidated = false
     stopTask = nil
     updatePickerActivation()
 
     if let start = startRequestedAfterStop {
       startRequestedAfterStop = nil
       selectionRequestedAfterStop = false
-      self.start(filter: start.filter, title: start.title)
+      self.start(filter: start.filter, title: start.title, initialCrop: start.initialCrop)
     } else if selectionRequestedAfterStop {
       selectionRequestedAfterStop = false
       chooseWindow()
@@ -440,23 +486,7 @@ final class CaptureSession {
       return
     }
 
-    selectionInProgress = false
-    updatePickerActivation()
-    let previousState = stateBeforeSelection
-    stateBeforeSelection = nil
-    if let previousState,
-      Self.canRestoreSelectionState(
-        previousState, currentStream: currentStream,
-        replacementInFlight: replacementTask != nil)
-    {
-      publish(previousState)
-    } else if let currentStream,
-      !currentStream.stopSignaled
-    {
-      publish(.running(currentStream.title))
-    } else if case .selecting = state {
-      publish(.idle)
-    }
+    restoreSelectionState()
   }
 
   private func handlePickerStartFailure() {
@@ -468,25 +498,8 @@ final class CaptureSession {
       return
     }
 
-    selectionInProgress = false
-    updatePickerActivation()
-    let previousState = stateBeforeSelection
-    stateBeforeSelection = nil
-    if let previousState,
-      Self.canRestoreSelectionState(
-        previousState, currentStream: currentStream,
-        replacementInFlight: replacementTask != nil)
-    {
-      publish(previousState)
-    } else if let currentStream,
-      !currentStream.stopSignaled
-    {
-      publish(.running(currentStream.title))
-    } else if case .selecting = state {
-      publish(.idle)
-    } else if currentStream == nil {
-      publish(.failed(L10n.string("capture.pickerUnavailable")))
-    }
+    restoreSelectionState()
+    onSelectionIssue?(.pickerUnavailable)
   }
 
   private func handlePickerUpdate(_ update: PickerUpdate) {
@@ -508,33 +521,46 @@ final class CaptureSession {
       else { return }
     }
 
-    guard update.filter.style == .window,
-      update.filter.includedWindows.count == 1
-    else {
+    guard let identity = SourceIdentity.from(filter: update.filter) else {
       // A late sheet choice must not fail a source picked from the list.
-      guard selectionInProgress || !fromPresentation else {
+      if fromPresentation && !selectionInProgress {
         updatePickerActivation()
         return
       }
-      selectionInProgress = false
-      updatePickerActivation()
-      let previousState = stateBeforeSelection
-      stateBeforeSelection = nil
-      if let previousState,
-        Self.canRestoreSelectionState(
-          previousState, currentStream: currentStream,
-          replacementInFlight: replacementTask != nil)
-      {
-        publish(previousState)
-      } else {
-        publish(.failed(L10n.string("capture.selectionUnavailable")))
+      if fromPresentation {
+        restoreSelectionState()
       }
+      updatePickerActivation()
+      onSelectionIssue?(.selectionUnavailable)
       return
     }
 
     // The latest user choice wins, even over a source picked from the list
     // while the sheet was open.
-    acceptSource(filter: update.filter, title: Self.title(for: update.filter))
+    acceptSource(
+      filter: update.filter, title: Self.title(for: update.filter),
+      identity: identity, initialCrop: nil
+    )
+  }
+
+  /// Restore the previous presentation without affecting a live stream or a
+  /// replacement that started while the picker sheet was open.
+  private func restoreSelectionState() {
+    selectionInProgress = false
+    updatePickerActivation()
+    let previousState = stateBeforeSelection
+    stateBeforeSelection = nil
+    if let previousState,
+      Self.canRestoreSelectionState(
+        previousState, currentStream: currentStream,
+        replacementInFlight: replacementTask != nil)
+    {
+      publish(previousState)
+    } else if let currentStream, !currentStream.stopSignaled {
+      publish(.running(currentStream.title))
+    } else if case .selecting = state {
+      publish(.idle)
+    }
   }
 
   /// Whether a picker event answers the sheet this session presented. Events
@@ -550,14 +576,23 @@ final class CaptureSession {
   /// any open selection and queues the source behind in-flight replacements.
   /// A still-open sheet keeps its presentation; its later choice replaces
   /// this source.
-  private func acceptSource(filter: SCContentFilter, title: String) {
+  private func acceptSource(
+    filter: SCContentFilter, title: String, identity: SourceIdentity,
+    initialCrop: CGRect?
+  ) {
     selectionInProgress = false
     stateBeforeSelection = nil
-    // A crop describes a region of the previous window only.
-    crop = nil
+    // A crop describes a region of the previous window only. Only a verified
+    // resume supplies a crop for the newly accepted source.
+    crop = initialCrop
     let operation = nextOperationID()
-    pendingSource = PendingSource(filter: filter, title: title, operationID: operation)
+    sourceIdentity = identity
+    pendingSource = PendingSource(
+      filter: filter, title: title, operationID: operation, initialCrop: initialCrop
+    )
     updatePickerActivation()
+    onSourceAccepted?(identity)
+    guard isOperationCurrent(operation) else { return }
     publish(.starting)
     scheduleReplacement()
   }
@@ -585,7 +620,7 @@ final class CaptureSession {
 
   private func replace(with source: PendingSource) async {
     guard !userStopped, source.operationID == operationID else { return }
-
+    crop = source.initialCrop
     publish(.starting)
     var streamGeneration = advanceGeneration()
 
@@ -697,6 +732,7 @@ final class CaptureSession {
       frameGate.pause(streamGeneration)
 
       guard isOperationCurrent(source.operationID) else { return }
+      sourceIdentity = nil
       _ = advanceGeneration()
       publish(.failed(L10n.string("capture.unavailable")))
     }
@@ -899,6 +935,9 @@ final class CaptureSession {
     let stoppedOperation = operationID
     let wasUserStopped = userStopped
     currentStream = nil
+    if pendingSource == nil, replacementTask == nil {
+      sourceIdentity = nil
+    }
     streamInactive = false
     frameSuspended = false
     frameSuspensionRevision = nil
@@ -999,6 +1038,7 @@ final class CaptureSession {
     context.stopSignaled = true
     let stoppedOperation = operationID
     currentStream = nil
+    sourceIdentity = nil
     streamInactive = false
     frameSuspended = false
     frameSuspensionRevision = nil
@@ -1174,6 +1214,16 @@ final class CaptureSession {
     return size
   }
 
+  /// Resume crops must be accepted exactly or rejected, never standardized or
+  /// clamped as interactive drag regions are.
+  private static func isValidInitialCrop(_ rect: CGRect) -> Bool {
+    rect.origin.x.isFinite && rect.origin.y.isFinite
+      && rect.width.isFinite && rect.height.isFinite
+      && rect.minX >= 0 && rect.minY >= 0
+      && rect.width >= minimumCropFraction && rect.height >= minimumCropFraction
+      && rect.maxX <= 1 && rect.maxY <= 1
+  }
+
   private static func sanitizedCrop(_ rect: CGRect) -> CGRect? {
     guard rect.origin.x.isFinite, rect.origin.y.isFinite,
       rect.width.isFinite, rect.height.isFinite
@@ -1213,12 +1263,14 @@ private struct PendingSource {
   let filter: SCContentFilter
   let title: String
   let operationID: UInt64
+  let initialCrop: CGRect?
 }
 
-/// A `start(filter:title:)` request that arrived while a stop was in flight.
+/// A `start(filter:title:initialCrop:)` request that arrived while a stop was in flight.
 private struct PendingStart {
   let filter: SCContentFilter
   let title: String
+  let initialCrop: CGRect?
 }
 
 /// The stream properties that can change while capturing. A stream records

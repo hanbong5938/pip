@@ -91,20 +91,21 @@ code, pre { font-family: var(--mono); }
 
 /* Hero */
 .hero {
-    padding: 88px 0 72px;
+    padding: 56px 0 72px;
     text-align: center;
 }
 
 .hero-icon {
-    width: 128px;
-    height: 128px;
+    width: 88px;
+    height: 88px;
     filter: drop-shadow(0 20px 40px rgba(0, 0, 0, 0.45));
 }
 
 .hero h1 {
-    margin: 20px 0 8px;
-    font-size: 64px;
-    line-height: 1.05;
+    max-width: 900px;
+    margin: 16px auto 16px;
+    font-size: clamp(32px, 5vw, 52px);
+    line-height: 1.15;
     letter-spacing: -0.02em;
     background: linear-gradient(135deg, #fff 0%, #c9c9d4 100%);
     -webkit-background-clip: text;
@@ -116,7 +117,7 @@ code, pre { font-family: var(--mono); }
     max-width: 640px;
     margin: 0 auto;
     color: var(--muted);
-    font-size: 20px;
+    font-size: 19px;
 }
 
 .badge {
@@ -136,8 +137,22 @@ code, pre { font-family: var(--mono); }
     flex-wrap: wrap;
     justify-content: center;
     gap: 12px;
-    margin-top: 32px;
+    margin-top: 24px;
 }
+
+.hero-warning {
+    max-width: 760px;
+    margin: 16px auto 0;
+    padding: 10px 14px;
+    border: 1px solid rgba(255, 215, 0, 0.3);
+    border-radius: 12px;
+    background: rgba(255, 215, 0, 0.08);
+    color: #ffe9a1;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.hero-warning a { color: #ffe27a; text-underline-offset: 2px; }
 
 .btn {
     display: inline-flex;
@@ -206,12 +221,14 @@ code, pre { font-family: var(--mono); }
 .copy:hover { background: var(--glass-strong); }
 .copy.done { color: var(--ok); border-color: rgba(74, 222, 128, 0.5); }
 
-/* Desktop mock */
+/* Labeled illustration, not product footage */
+.mock-figure { max-width: 880px; margin: 48px auto 0; }
+.mock-figure figcaption { margin-top: 12px; color: var(--muted); font-size: 13px; }
 .mock {
     position: relative;
     max-width: 880px;
     aspect-ratio: 16 / 9;
-    margin: 64px auto 0;
+    margin: 0 auto;
     overflow: hidden;
     border: 1px solid var(--border);
     border-radius: 22px;
@@ -284,24 +301,12 @@ code, pre { font-family: var(--mono); }
     aspect-ratio: 16 / 10;
     border: 1px solid rgba(255, 255, 255, 0.25);
     border-radius: 12px;
-    background:
-        linear-gradient(160deg, rgba(91, 157, 255, 0.9), rgba(37, 99, 235, 0.6) 45%, rgba(124, 58, 237, 0.75));
+    background: #171b29;
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+    overflow: hidden;
     animation: float 6s ease-in-out infinite;
 }
 
-.mock-pip::after {
-    content: "";
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    width: 0;
-    height: 0;
-    margin: -14px 0 0 -9px;
-    border-top: 14px solid transparent;
-    border-bottom: 14px solid transparent;
-    border-left: 22px solid rgba(255, 255, 255, 0.9);
-}
 
 .mock-pip-label {
     position: absolute;
@@ -311,6 +316,15 @@ code, pre { font-family: var(--mono); }
     border-radius: 6px;
     background: rgba(0, 0, 0, 0.4);
     font-size: 11px;
+}
+
+.mock-pip-content {
+    display: block;
+    padding: 56px 10px 10px;
+    color: #9be59b;
+    font: 10px/1.8 var(--mono);
+    text-align: left;
+    white-space: nowrap;
 }
 
 @keyframes float {
@@ -455,6 +469,8 @@ kbd {
 
 .install ol li { margin-bottom: 8px; }
 
+.install ol code { overflow-wrap: anywhere; }
+
 .note {
     margin-top: 18px;
     padding: 16px 18px;
@@ -504,13 +520,18 @@ footer a { color: var(--text); }
 }
 
 @media (max-width: 640px) {
-    .hero { padding: 56px 0 48px; }
-    .hero h1 { font-size: 44px; }
+    .hero { padding: 40px 0 48px; }
+    .hero-icon { width: 72px; height: 72px; }
+    .hero h1 { font-size: clamp(30px, 8vw, 42px); }
     .hero .tagline { font-size: 17px; }
+    .hero-warning { font-size: 13px; text-align: left; }
     .section-head h2 { font-size: 30px; }
+    .grid { grid-template-columns: minmax(0, 1fr); }
+    .actions .btn { justify-content: center; }
     section { padding: 56px 0; }
     .nav a:not(.lang) { display: none; }
     .mock-lines { font-size: 9px; padding: 8px 10px; line-height: 1.6; }
+    .mock-pip-content { font-size: 8px; padding: 32px 8px 8px; }
     .cmd code { font-size: 12.5px; }
     .card { padding: 22px; }
 }
