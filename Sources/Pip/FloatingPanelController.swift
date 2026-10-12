@@ -78,6 +78,7 @@ private final class VideoContainerView: NSView {
 final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDelegate {
   var onChooseWindow: (() -> Void)?
   var onClose: (() -> Void)?
+  var onResumeCapture: (() -> Void)?
   var onVideoPixelSizeChange: ((CGSize) -> Void)?
   var onPickWindow: ((CGWindowID) -> Void)?
   var onPickWindowRegion: ((CGWindowID) -> Void)?
@@ -105,6 +106,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
   /// sizing layout: the video always fills the content view.
   private let overlay: NSVisualEffectView
   private let statusLabel: NSTextField
+  private let selectionNoticeView: NSVisualEffectView
+  private let selectionNoticeLabel: NSTextField
   private let chooseWindowButton: NSButton
   private let cropButton: NSButton
   private let closeButton: NSButton
@@ -131,6 +134,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
   private var lastEmittedVideoPixelSize: CGSize?
   private var isEditingSize = false
   private var isSyncingSizeFields = false
+  private var currentCaptureState: CaptureState = .idle
   /// True while the last published state is `.running` or `.suspended`.
   private var isCapturing = false
   private var isClickThrough = false
@@ -164,6 +168,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
       defer: true
     )
     self.statusLabel = NSTextField(labelWithString: L10n.string("state.idle"))
+    self.selectionNoticeView = NSVisualEffectView()
+    self.selectionNoticeLabel = NSTextField(wrappingLabelWithString: "")
     self.chooseWindowButton = NSButton(frame: .zero)
     self.cropButton = NSButton(frame: .zero)
     self.closeButton = NSButton(frame: .zero)
@@ -212,7 +218,14 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     requestVideoRedraw()
   }
 
-  /// Hides the panel through the same once-only path as the close buttons.
+  /// Hiding ends transient edits without sending the terminal close callback.
+  /// Capture shutdown and retained source ownership belong to the session.
+  func hide() {
+    endSizeEditing()
+    cancelCropSelection()
+    panel.orderOut(nil)
+  }
+
   func close() {
     requestClose()
   }
@@ -294,6 +307,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
   }
 
   func update(state: CaptureState) {
+    currentCaptureState = state
     let presentation = Self.presentation(for: state)
     panel.title = presentation.title
     panel.setAccessibilityLabel(presentation.title)
@@ -318,6 +332,23 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
       cancelCropSelection()
     }
     refreshOverlay(animated: true)
+  }
+
+  /// A source-selection problem does not replace the live capture presentation.
+  /// The separate banner stays visible without a hover and clears independently.
+  func setSelectionNotice(_ issue: SelectionIssue?) {
+    selectionNoticeLabel.stringValue = issue.map { L10n.string($0.messageKey) } ?? ""
+    selectionNoticeLabel.setAccessibilityValue(selectionNoticeLabel.stringValue)
+    selectionNoticeView.setAccessibilityLabel(selectionNoticeLabel.stringValue)
+    selectionNoticeView.isHidden = issue == nil
+    // Restore the underlying state presentation if a notice is dismissed.
+    if issue == nil {
+      let presentation = Self.presentation(for: currentCaptureState)
+      panel.title = presentation.title
+      panel.setAccessibilityLabel(presentation.title)
+      statusLabel.stringValue = presentation.status
+      statusLabel.setAccessibilityValue(presentation.status)
+    }
   }
 
   /// Shows the panel and replaces the overlay's button row with an inline
@@ -443,6 +474,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     listView.onRefresh = { [weak self] in self?.onRefreshWindowList?() }
     listView.onUseSystemPicker = { [weak self] in self?.onUseSystemPicker?() }
     listView.onRequestPermission = { [weak self] in self?.onRequestPermission?() }
+    listView.onResumeCapture = { [weak self] in self?.onResumeCapture?() }
     // Above the video, below a crop selection.
     videoContainer.addSubview(listView, positioned: .above, relativeTo: videoView)
     pinToVideoContainer(listView)
@@ -456,7 +488,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
   /// non-finite input means fully opaque.
   func setOpacity(_ value: Double) {
     let range = AppSettings.opacityRange
-    let clamped = value.isFinite ? min(max(value, range.lowerBound), range.upperBound) : range.upperBound
+    let clamped =
+      value.isFinite ? min(max(value, range.lowerBound), range.upperBound) : range.upperBound
     panel.alphaValue = CGFloat(clamped)
   }
 
@@ -524,7 +557,9 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     dismissCropSelection()
   }
 
-  private func finishCropSelection(from selection: CropSelectionView, result: CropSelectionView.Result) {
+  private func finishCropSelection(
+    from selection: CropSelectionView, result: CropSelectionView.Result
+  ) {
     guard selection === cropView else { return }
     dismissCropSelection()
     onCropSelection?(result)
@@ -745,9 +780,10 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     panel.hasShadow = true
     panel.backgroundColor = .windowBackgroundColor
     panel.isOpaque = true
-    panel.minSize = panel.frameRect(
-      forContentRect: NSRect(origin: .zero, size: Self.minimumContentSize)
-    ).size
+    panel.minSize =
+      panel.frameRect(
+        forContentRect: NSRect(origin: .zero, size: Self.minimumContentSize)
+      ).size
     // Restores a saved frame (if any) immediately; initialFrame() covers
     // the first launch. show() re-homes frames from disconnected screens.
     _ = panel.setFrameAutosaveName(autosaveName)
@@ -789,6 +825,21 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     videoView.setAccessibilityLabel(L10n.string("panel.video"))
     videoContainer.addSubview(videoView)
     pinToVideoContainer(videoView)
+
+    configureHUD(selectionNoticeView)
+    selectionNoticeView.layer?.cornerRadius = 8
+    selectionNoticeView.setAccessibilityElement(true)
+    selectionNoticeView.setAccessibilityRole(.group)
+    selectionNoticeView.setAccessibilityIdentifier("pip.selectionNotice")
+    selectionNoticeView.isHidden = true
+    selectionNoticeLabel.translatesAutoresizingMaskIntoConstraints = false
+    selectionNoticeLabel.preferredMaxLayoutWidth = 200
+    selectionNoticeLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    selectionNoticeLabel.textColor = .labelColor
+    selectionNoticeLabel.alignment = .center
+    selectionNoticeLabel.isSelectable = false
+    selectionNoticeLabel.setAccessibilityIdentifier("pip.selectionNotice.message")
+    selectionNoticeView.addSubview(selectionNoticeLabel)
 
     statusLabel.translatesAutoresizingMaskIntoConstraints = false
     statusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -920,6 +971,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
     clickThroughBadge.addSubview(badgeImage)
 
     rootView.addSubview(videoContainer)
+    videoContainer.addSubview(selectionNoticeView, positioned: .above, relativeTo: videoView)
     rootView.addSubview(overlay)
     rootView.addSubview(clickThroughBadge)
 
@@ -942,6 +994,19 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
       videoContainer.topAnchor.constraint(equalTo: rootView.topAnchor),
       videoContainer.bottomAnchor.constraint(equalTo: rootView.bottomAnchor),
       videoContainer.heightAnchor.constraint(greaterThanOrEqualToConstant: 120),
+
+      selectionNoticeView.topAnchor.constraint(equalTo: videoContainer.topAnchor, constant: 8),
+      selectionNoticeView.centerXAnchor.constraint(equalTo: videoContainer.centerXAnchor),
+      selectionNoticeView.widthAnchor.constraint(
+        lessThanOrEqualTo: videoContainer.widthAnchor, constant: -16),
+      selectionNoticeLabel.leadingAnchor.constraint(
+        equalTo: selectionNoticeView.leadingAnchor, constant: 10),
+      selectionNoticeLabel.trailingAnchor.constraint(
+        equalTo: selectionNoticeView.trailingAnchor, constant: -10),
+      selectionNoticeLabel.topAnchor.constraint(
+        equalTo: selectionNoticeView.topAnchor, constant: 6),
+      selectionNoticeLabel.bottomAnchor.constraint(
+        equalTo: selectionNoticeView.bottomAnchor, constant: -6),
 
       overlay.centerXAnchor.constraint(equalTo: rootView.centerXAnchor),
       overlay.bottomAnchor.constraint(equalTo: rootView.bottomAnchor, constant: -8),
@@ -1265,7 +1330,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate, NSTextFieldDele
   /// aspect) to fit the screen's visible frame and then to satisfy
   /// `panel.minSize`. When both cannot hold, minSize wins and the renderer
   /// letterboxes.
-  private func fittedFrameSize(forVideoSize videoSize: NSSize, on screen: NSScreen? = nil) -> NSSize {
+  private func fittedFrameSize(forVideoSize videoSize: NSSize, on screen: NSScreen? = nil) -> NSSize
+  {
     guard videoSize.width > 0, videoSize.height > 0,
       videoSize.width.isFinite, videoSize.height.isFinite
     else {

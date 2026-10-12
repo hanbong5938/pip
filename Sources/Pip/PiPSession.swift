@@ -21,7 +21,59 @@ final class PiPSession {
   /// True from `show()` (or any action that brings the panel up) until the
   /// panel closes. A closed panel always has its capture stopped.
   private(set) var isPanelOpen = false
+  private var isClosed = false
+  private var operationID: UInt64 = 0
+  private var stopRequested = false
+  private var stoppedByUser = false
+  private var didNotifyClose = false
+  private var retainedSource: SourceIdentity?
+  private var retainedCrop: CGRect?
+  private var pendingResumeCrop: CGRect?
+  private var resumeOperation: UInt64?
+  private struct RestoreSelection {
+    let setup: SavedSetup
+    var operation: UInt64
+    var selectedSource: SourceIdentity?
+    var previewReady = false
+  }
+  private var restoreSelection: RestoreSelection?
+  private var selectionIssue: SelectionIssue?
 
+  var hasRetainedSetup: Bool { !isClosed && retainedSource != nil }
+  var isStoppingCapture: Bool { stopRequested }
+  var isPausedByUser: Bool { stoppedByUser }
+  var canChooseSource: Bool {
+    !isClosed && !isShuttingDown && !stopRequested && renderer != nil
+  }
+  var hasCaptureWork: Bool {
+    stopRequested || captureSession.hasCaptureWork || pickTask != nil || isSelecting
+  }
+  private var isSelecting: Bool {
+    if case .selecting = state { return true }
+    return false
+  }
+  private var isRunning: Bool {
+    if case .running = state { return true }
+    return false
+  }
+  var canResumeCapture: Bool {
+    !isClosed && !isShuttingDown && !stopRequested && renderer != nil
+      && retainedSource != nil && !hasCaptureWork
+  }
+  var canOpenSourceApp: Bool {
+    !isClosed && !isShuttingDown && retainedSource?.isSameRunningApplication() == true
+  }
+  var canRememberSetup: Bool {
+    !isClosed && !isShuttingDown && renderer != nil && captureSession.hasCaptureWork
+      && captureSession.sourceIdentity != nil && isRunning
+  }
+  var canApplySavedSetup: Bool {
+    !isClosed && !isShuttingDown && captureSession.hasCaptureWork && isRunning
+      && ((restoreSelection?.previewReady == true
+        && captureSession.sourceIdentity == restoreSelection?.selectedSource)
+        || pendingResumeCrop != nil)
+  }
+  var hasPendingResumeRegion: Bool { pendingResumeCrop != nil }
   /// Menu label: the current or last source title, or "Empty" once the
   /// panel was closed or before any source started.
   var displayTitle: String {
@@ -42,7 +94,7 @@ final class PiPSession {
 
   /// Region selection is only meaningful while frames are displayed.
   var canSelectRegion: Bool {
-    guard renderer != nil else { return false }
+    guard !isClosed, !isShuttingDown, !stopRequested, renderer != nil else { return false }
     switch state {
     case .running, .suspended:
       return true
@@ -132,6 +184,27 @@ final class PiPSession {
     captureSession.onSourceWindowClosed = { [weak self] in
       self?.sourceWindowClosed()
     }
+    captureSession.onSourceAccepted = { [weak self] source in
+      guard let self, !self.isClosed, !self.isShuttingDown, !self.stopRequested else { return }
+      self.retainedSource = source
+      self.stoppedByUser = false
+      self.selectionIssue = nil
+      if self.resumeOperation != self.operationID { self.retainedCrop = nil }
+      self.resumeOperation = nil
+      if self.restoreSelection?.operation == self.operationID {
+        self.restoreSelection?.selectedSource = source
+        self.restoreSelection?.previewReady = false
+      } else {
+        self.restoreSelection = nil
+      }
+      self.panelController.setSelectionNotice(nil)
+      self.onStateChange?(self.state)
+    }
+    captureSession.onSelectionIssue = { [weak self] issue in
+      guard let self, !self.isClosed, !self.isShuttingDown else { return }
+      self.restoreSelection = nil
+      self.presentSelectionIssue(issue)
+    }
 
     captureSession.setFrameRate(frameRate)
     panelController.setOpacity(opacity)
@@ -139,82 +212,111 @@ final class PiPSession {
     panelController.update(state: state)
   }
 
-  /// Shows the panel; while no capture runs, the window list is refreshed so
-  /// it is current every time the panel comes back.
+  /// Showing a hidden panel never authorizes or restarts capture.
   func show() {
+    guard !isClosed, !isShuttingDown else { return }
     showPanel()
-    if wantsSourceChooser {
-      refreshWindowList()
-    }
+    if wantsSourceChooser { presentIdleChooser() }
   }
 
-  /// Hides the panel through the same path as its close button, which stops
-  /// the capture and fires `onPanelClosed`. No-op while already closed.
+  func hide() {
+    guard !isClosed, !isShuttingDown else { return }
+    stopCapture()
+    isPanelOpen = false
+    panelController.hide()
+  }
+
+  /// Close is terminal, including when the panel was already hidden.
   func close() {
+    guard !isClosed else { return }
+    isClosed = true
+    stopCapture()
+    retainedSource = nil
+    retainedCrop = nil
+    pendingResumeCrop = nil
+    lastSourceTitle = nil
+    isPanelOpen = false
     panelController.close()
+    // `close()` on an already hidden panel need not invoke the view callback.
+    notifyPanelClosedOnce()
   }
 
-  /// Opens the system window picker (`SCContentSharingPicker`).
   func chooseWindow() {
-    guard !isShuttingDown else { return }
+    beginPicker(keepRestore: false)
+  }
+
+  private func beginPicker(keepRestore: Bool) {
+    guard !isClosed, !isShuttingDown, !stopRequested else { return }
     guard renderer != nil else {
       showRendererFailure()
       return
     }
-
+    operationID &+= 1
+    resumeOperation = nil
+    stopRequested = false
+    selectionIssue = nil
+    if !keepRestore { restoreSelection = nil }
+    pendingResumeCrop = nil
     pendingRegionSelection = false
     pickTask?.cancel()
     pickTask = nil
     showPanel()
+    panelController.setSelectionNotice(nil)
     captureSession.chooseWindow()
   }
 
   /// Starts (or replaces) the capture with a window from the in-app list. With
   /// `region`, crop selection begins once the capture is running.
+  /// Resolves a list selection again, discarding results from older operations.
   func pickWindow(_ windowID: CGWindowID, region: Bool) {
-    guard !isShuttingDown else { return }
+    guard !isClosed, !isShuttingDown, !stopRequested else { return }
     guard renderer != nil else {
       showRendererFailure()
       return
     }
-
     showPanel()
+    operationID &+= 1
+    resumeOperation = nil
+    stopRequested = false
+    let operation = operationID
+    // A restore flow intentionally accepts its own next list pick; all other
+    // list picks, including region picks, are ordinary selections.
+    if region || restoreSelection?.selectedSource != nil { restoreSelection = nil }
+    restoreSelection?.operation = operation
+    pendingResumeCrop = nil
     pendingRegionSelection = false
     pickTask?.cancel()
     pickTask = Task { @MainActor [weak self] in
       do {
         let resolved = try await WindowCatalog.makeFilter(for: windowID)
-        guard let self, !Task.isCancelled, !self.isShuttingDown else { return }
+        guard let self, !Task.isCancelled, !self.isClosed, !self.isShuttingDown,
+          self.operationID == operation
+        else { return }
         self.pickTask = nil
         self.pendingRegionSelection = region
         self.captureSession.start(filter: resolved.filter, title: resolved.window.displayTitle)
       } catch {
-        guard let self, !Task.isCancelled, !self.isShuttingDown else { return }
+        guard let self, !Task.isCancelled, !self.isClosed, !self.isShuttingDown,
+          self.operationID == operation
+        else { return }
         self.pickTask = nil
-        if case WindowCatalogError.permissionDenied = error, self.wantsSourceChooser {
-          self.windowListTask?.cancel()
-          self.windowListTask = nil
-          self.setSourceChooser(.permissionRequired)
-        } else {
-          // The listed window is gone (or ScreenCaptureKit hiccupped); show
-          // what is capturable now. No-op while another capture runs.
-          self.refreshWindowList()
-        }
+        self.restoreSelection = nil
+        self.handleCatalogError(error)
       }
     }
   }
 
   /// Reloads the in-panel window list. No-op while a capture is running.
+  /// Optional window catalog; picker remains available without its permission.
   func refreshWindowList() {
-    guard !isShuttingDown, wantsSourceChooser else { return }
+    guard !isClosed, !isShuttingDown, isPanelOpen, wantsSourceChooser else { return }
+    selectionIssue = nil
     windowListTask?.cancel()
     windowListTask = nil
-
     guard ScreenCapturePermission.isGranted else {
       setSourceChooser(.permissionRequired)
       return
     }
-
     setSourceChooser(.loading)
     windowListTask = Task { @MainActor [weak self] in
       let content: WindowListView.Content
@@ -223,12 +325,165 @@ final class PiPSession {
       } catch WindowCatalogError.permissionDenied {
         content = .permissionRequired
       } catch {
-        content = .windows([])
+        content = .failure(.catalogUnavailable)
       }
-      guard let self, !Task.isCancelled, self.wantsSourceChooser else { return }
+      guard let self, !Task.isCancelled, !self.isClosed, self.isPanelOpen,
+        self.wantsSourceChooser
+      else { return }
       self.windowListTask = nil
       self.setSourceChooser(content)
     }
+  }
+
+  func refreshSourceChooserIfVisible() {
+    guard isPanelOpen, !isClosed, !isShuttingDown, wantsSourceChooser else { return }
+    if retainedSource == nil { refreshWindowList() } else { presentIdleChooser() }
+  }
+  /// Resume only after fresh identity/permission proof; otherwise use user consent.
+  func resumeCapture() {
+    guard canResumeCapture, let source = retainedSource else { return }
+    restoreSelection = nil
+    if !ScreenCapturePermission.isGranted || !source.isSameRunningApplication() {
+      beginPicker(keepRestore: false)
+      return
+    }
+    operationID &+= 1
+    resumeOperation = operationID
+    stopRequested = false
+    let operation = operationID
+    showPanel()
+    panelController.setSelectionNotice(nil)
+    pickTask?.cancel()
+    pickTask = Task { @MainActor [weak self] in
+      do {
+        let resolved = try await WindowCatalog.makeFilter(for: source)
+        guard let self, !Task.isCancelled, !self.isClosed, !self.isShuttingDown,
+          self.operationID == operation
+        else { return }
+        self.pickTask = nil
+        guard let fresh = SourceIdentity.from(filter: resolved.filter),
+          fresh.isSameRunningApplication()
+        else {
+          self.beginPicker(keepRestore: false)
+          return
+        }
+        let unchanged = fresh.sourceSize == source.sourceSize
+        let initialCrop = unchanged ? self.retainedCrop : nil
+        self.pendingResumeCrop = unchanged ? nil : self.retainedCrop
+        self.captureSession.start(
+          filter: resolved.filter, title: resolved.window.displayTitle, initialCrop: initialCrop)
+      } catch WindowCatalogError.permissionDenied {
+        guard let self, !Task.isCancelled, self.operationID == operation else { return }
+        self.pickTask = nil
+        self.beginPicker(keepRestore: false)
+      } catch WindowCatalogError.windowNotFound {
+        guard let self, !Task.isCancelled, self.operationID == operation else { return }
+        self.pickTask = nil
+        self.beginPicker(keepRestore: false)
+      } catch {
+        guard let self, !Task.isCancelled, self.operationID == operation else { return }
+        self.pickTask = nil
+        self.presentSelectionIssue(.catalogUnavailable)
+      }
+    }
+  }
+
+  func openSourceApp() {
+    guard canOpenSourceApp, let source = retainedSource,
+      let app = NSRunningApplication(processIdentifier: source.processID),
+      source.isSameRunningApplication(), app.activate(options: [])
+    else {
+      presentSelectionIssue(.sourceAppUnavailable)
+      return
+    }
+  }
+
+  func rememberCurrentSetup(in store: SavedSetupStore) {
+    guard canRememberSetup, let source = captureSession.sourceIdentity,
+      let setup = SavedSetup(
+        appBundleIdentifier: source.bundleIdentifier, appName: source.appName,
+        crop: captureSession.crop, sourceSize: source.sourceSize,
+        frameRate: frameRate.rawValue, opacity: opacity, rotationDegrees: rotation.degrees),
+      store.save(setup)
+    else {
+      presentSelectionIssue(.setupUnavailable)
+      return
+    }
+    panelController.setSelectionNotice(nil)
+  }
+
+  func restoreSavedSetup(from store: SavedSetupStore) {
+    guard !isClosed, !isShuttingDown, !stopRequested, renderer != nil else { return }
+    guard let setup = store.savedSetup, setup.isValid else {
+      presentSelectionIssue(.setupUnavailable)
+      return
+    }
+    restoreSelection = RestoreSelection(setup: setup, operation: operationID &+ 1)
+    beginPicker(keepRestore: true)
+  }
+  func forgetSavedSetup() {
+    restoreSelection = nil
+    onStateChange?(state)
+  }
+
+  func applySavedSetup() {
+    guard canApplySavedSetup, let source = captureSession.sourceIdentity else { return }
+    let setup = restoreSelection?.previewReady == true ? restoreSelection?.setup : nil
+    guard setup?.isValid != false else {
+      restoreSelection = nil
+      presentSelectionIssue(.setupUnavailable)
+      return
+    }
+    let alert = NSAlert()
+    if let setup {
+      alert.messageText = L10n.string("setup.confirmTitle")
+      let mismatch =
+        setup.sourceSize != source.sourceSize
+        || (setup.appBundleIdentifier != nil
+          && setup.appBundleIdentifier != source.bundleIdentifier)
+        || setup.appName != source.appName
+      alert.informativeText =
+        L10n.format("setup.confirmMessage", source.appName)
+        + (mismatch ? "\n\n" + L10n.format("setup.mismatchMessage", source.appName) : "")
+    } else {
+      alert.messageText = L10n.string("setup.resumeRegionConfirmTitle")
+      alert.informativeText = L10n.format("setup.resumeRegionConfirmMessage", source.appName)
+    }
+    alert.addButton(
+      withTitle: L10n.string(setup == nil ? "setup.applyPreviousRegion" : "setup.apply"))
+    alert.addButton(withTitle: L10n.string("setup.cancel"))
+    guard alert.runModal() == .alertFirstButtonReturn, !isClosed, !isShuttingDown,
+      captureSession.sourceIdentity == source, canApplySavedSetup
+    else { return }
+    if let setup {
+      guard let rate = FrameRate(rawValue: setup.frameRate),
+        let newRotation = VideoRotation(rawValue: setup.rotationDegrees / 90)
+      else {
+        restoreSelection = nil
+        presentSelectionIssue(.setupUnavailable)
+        return
+      }
+      setFrameRate(rate)
+      setOpacity(setup.opacity)
+      setRotation(newRotation)
+      captureSession.setCrop(setup.crop)
+      restoreSelection = nil
+    } else if let crop = pendingResumeCrop {
+      captureSession.setCrop(crop)
+      pendingResumeCrop = nil
+    }
+    onStateChange?(state)
+  }
+
+  private func setRotation(_ value: VideoRotation) {
+    guard value != rotation else { return }
+    let previous = rotation
+    rotation = value
+    if value.swapsDimensions != previous.swapsDimensions {
+      panelController.swapVideoOrientation()
+      updateCaptureOutputSize(videoPixelSize: panelController.videoPixelSize)
+    }
+    renderer?.setRotation(value)
   }
 
   /// Prompts for Screen Recording access (first time only) and falls back to
@@ -266,10 +521,12 @@ final class PiPSession {
   }
 
   func resetCrop() {
-    guard !isShuttingDown else { return }
+    guard !isClosed, !isShuttingDown else { return }
     if panelController.isCropping {
       panelController.cancelCropSelection()
     }
+    retainedCrop = nil
+    pendingResumeCrop = nil
     captureSession.setCrop(nil)
   }
 
@@ -303,30 +560,45 @@ final class PiPSession {
     panelController.beginCustomSizeEditing()
   }
 
-  /// Fire-and-forget capture stop.
+  /// Invalidate every selection/restore operation before scheduling stop.
   func stopCapture() {
-    pendingRegionSelection = false
-    pickTask?.cancel()
-    pickTask = nil
-    Task { @MainActor [weak self] in
-      guard let self else { return }
-      await self.captureSession.stop()
+    operationID &+= 1
+    stopRequested = true
+    stoppedByUser = true
+    selectionIssue = nil
+    resumeOperation = nil
+    if !isClosed, let identity = captureSession.sourceIdentity {
+      retainedSource = identity
+      retainedCrop = captureSession.crop
     }
-  }
-
-  /// Suppresses panel-originated actions (choose window, close-driven stop)
-  /// immediately. Call synchronously when termination begins; `shutdown()`
-  /// runs later on a task.
-  func beginShutdown() {
-    isShuttingDown = true
+    captureSession.invalidateForUserStop()
     pendingRegionSelection = false
+    pendingResumeCrop = nil
+    restoreSelection = nil
     pickTask?.cancel()
     pickTask = nil
     windowListTask?.cancel()
     windowListTask = nil
+    let stoppedOperation = operationID
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      await self.captureSession.stop()
+      guard !self.isClosed, !self.isShuttingDown,
+        self.operationID == stoppedOperation
+      else { return }
+      self.stopRequested = false
+      self.presentIdleChooser()
+      self.onStateChange?(self.state)
+    }
+    onStateChange?(state)
   }
 
-  /// Awaits the capture stop, then shuts the renderer down.
+  func beginShutdown() {
+    guard !isShuttingDown else { return }
+    stopCapture()
+    isShuttingDown = true
+  }
+
   func shutdown() async {
     beginShutdown()
     await captureSession.stop()
@@ -345,6 +617,9 @@ final class PiPSession {
     }
     panelController.onPickWindowRegion = { [weak self] windowID in
       self?.pickWindow(windowID, region: true)
+    }
+    panelController.onResumeCapture = { [weak self] in
+      self?.resumeCapture()
     }
     panelController.onRefreshWindowList = { [weak self] in
       self?.refreshWindowList()
@@ -367,13 +642,48 @@ final class PiPSession {
   }
 
   private var wantsSourceChooser: Bool {
-    guard renderer != nil else { return false }
+    guard renderer != nil, !isClosed, !isShuttingDown, !stopRequested else { return false }
     switch state {
     case .idle, .stopped, .failed:
-      return true
+      return !captureSession.hasCaptureWork
     case .selecting, .starting, .running, .suspended:
       return false
     }
+  }
+
+  private func presentIdleChooser() {
+    guard isPanelOpen, wantsSourceChooser else { return }
+    if let selectionIssue {
+      setSourceChooser(.failure(selectionIssue))
+    } else if let retainedSource {
+      setSourceChooser(.paused(source: retainedSource.appName, canResume: canResumeCapture))
+    } else {
+      refreshWindowList()
+    }
+  }
+
+  private func handleCatalogError(_ error: any Error) {
+    if case WindowCatalogError.permissionDenied = error {
+      if wantsSourceChooser {
+        setSourceChooser(.permissionRequired)
+      } else {
+        presentSelectionIssue(.catalogUnavailable)
+      }
+    } else if case WindowCatalogError.windowNotFound = error {
+      presentSelectionIssue(.sourceUnavailable)
+    } else {
+      presentSelectionIssue(.catalogUnavailable)
+    }
+  }
+
+  private func presentSelectionIssue(_ issue: SelectionIssue) {
+    selectionIssue = issue
+    if wantsSourceChooser, isPanelOpen {
+      setSourceChooser(.failure(issue))
+    } else {
+      panelController.setSelectionNotice(issue)
+    }
+    onStateChange?(state)
   }
 
   private func setSourceChooser(_ content: WindowListView.Content?) {
@@ -423,26 +733,37 @@ final class PiPSession {
   }
 
   private func showPanel() {
+    guard !isClosed, !isShuttingDown else { return }
     isPanelOpen = true
     panelController.show()
   }
 
-  private func panelDidClose() {
-    isPanelOpen = false
-    lastSourceTitle = nil
-    guard !isShuttingDown else { return }
-    stopCapture()
+  private func notifyPanelClosedOnce() {
+    guard !didNotifyClose else { return }
+    didNotifyClose = true
     onPanelClosed?()
   }
 
-  /// The capture session has already stopped and published why; auto-close
-  /// takes the same path as the user closing the panel.
+  private func panelDidClose() {
+    close()
+  }
+
   private func sourceWindowClosed() {
-    guard !isShuttingDown, settings.autoCloseOnSourceClose else { return }
-    panelController.close()
+    guard !isClosed, !isShuttingDown else { return }
+    if settings.autoCloseOnSourceClose {
+      close()
+    } else {
+      stoppedByUser = false
+      presentSelectionIssue(.sourceUnavailable)
+    }
   }
 
   private func captureStateChanged(_ state: CaptureState) {
+    guard !isClosed, !isShuttingDown else { return }
+    let wasSelecting = isSelecting
+    if stopRequested {
+      guard case .stopped = state else { return }
+    }
     switch state {
     case .idle, .stopped, .failed:
       panelController.setSourceAspect(nil)
@@ -455,6 +776,16 @@ final class PiPSession {
     self.state = published
     if case .running(let title) = published {
       lastSourceTitle = Self.menuTitle(title)
+      if restoreSelection?.selectedSource == captureSession.sourceIdentity {
+        restoreSelection?.previewReady = true
+      }
+    }
+    if case .selecting = state {
+      // The picker still owns the pending restore.
+    } else if restoreSelection?.selectedSource == nil, restoreSelection != nil,
+      pickTask == nil
+    {
+      restoreSelection = nil
     }
     panelController.update(state: published)
 
@@ -473,14 +804,20 @@ final class PiPSession {
       if panelController.isCropping {
         panelController.cancelCropSelection()
       }
-      if wantsSourceChooser, !isSourceChooserVisible {
-        refreshWindowList()
+      if isPanelOpen, wantsSourceChooser {
+        if retainedSource != nil || !isSourceChooserVisible || wasSelecting {
+          presentIdleChooser()
+        }
       }
     case .selecting:
       // The system picker is open; whatever the panel shows stays underneath.
       if panelController.isCropping {
         panelController.cancelCropSelection()
       }
+    }
+    if case .failed = state, restoreSelection != nil {
+      restoreSelection = nil
+      presentSelectionIssue(.sourceUnavailable)
     }
 
     onStateChange?(published)

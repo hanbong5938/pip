@@ -12,6 +12,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
   private let settings = AppSettings()
   private lazy var manager = PiPManager(settings: settings)
+  private let savedSetupStore = SavedSetupStore()
   private var statusItem: NSStatusItem?
   private var statusMenu: NSMenu?
   /// The "Choose Window" submenu being filled; only one is open at a time.
@@ -72,6 +73,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
       manager.showAll()
     }
     return false
+  }
+  func applicationDidBecomeActive(_ notification: Notification) {
+    guard !isTerminating else { return }
+    for session in manager.sessions { session.refreshSourceChooserIfVisible() }
   }
 
   // MARK: - Settings and click-through
@@ -239,6 +244,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
   ) {
     let isActive = !isTerminating
 
+    menu.addItem(
+      makeMenuItem(
+        title: L10n.string("menu.useSystemPicker"),
+        action: #selector(chooseWindowFromMenu(_:)),
+        identifier: prefix + "use-system-picker",
+        isEnabled: isActive && session.canChooseSource,
+        session: session
+      ))
     let windowMenu = WindowMenu()
     windowMenu.autoenablesItems = false
     windowMenu.delegate = self
@@ -249,15 +262,84 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         title: L10n.string("menu.chooseWindow"),
         identifier: prefix + "choose-window",
         submenu: windowMenu,
-        isEnabled: isActive
+        isEnabled: isActive && session.canChooseSource
       ))
-
+    if session.isStoppingCapture {
+      menu.addItem(
+        makeDisabledItem(
+          title: L10n.string("capture.hiddenStopping"),
+          identifier: prefix + "capture-status"))
+    } else if session.isPausedByUser && session.hasRetainedSetup && !session.hasCaptureWork {
+      menu.addItem(
+        makeDisabledItem(
+          title: L10n.string(
+            session.isPanelOpen ? "capture.pausedByUser" : "capture.hiddenPaused"),
+          identifier: prefix + "capture-status"))
+    }
     menu.addItem(
       makeMenuItem(
         title: L10n.string("menu.showPanel"),
         action: #selector(showPanelFromMenu(_:)),
         identifier: prefix + "show-panel",
-        isEnabled: isActive,
+        isEnabled: isActive && !session.isPanelOpen,
+        session: session
+      ))
+    menu.addItem(
+      makeMenuItem(
+        title: L10n.string("menu.hidePanel"),
+        action: #selector(hidePanelFromMenu(_:)),
+        identifier: prefix + "hide-panel",
+        isEnabled: isActive && session.isPanelOpen,
+        session: session
+      ))
+    menu.addItem(
+      makeMenuItem(
+        title: L10n.string("menu.resumeCapture"),
+        action: #selector(resumeCaptureFromMenu(_:)),
+        identifier: prefix + "resume-capture",
+        isEnabled: isActive && session.canResumeCapture,
+        session: session
+      ))
+    menu.addItem(
+      makeMenuItem(
+        title: L10n.string("menu.openSourceApp"),
+        action: #selector(openSourceAppFromMenu(_:)),
+        identifier: prefix + "open-source-app",
+        isEnabled: isActive && session.canOpenSourceApp,
+        session: session
+      ))
+    menu.addItem(
+      makeMenuItem(
+        title: L10n.string("menu.rememberSetup"),
+        action: #selector(rememberSetupFromMenu(_:)),
+        identifier: prefix + "remember-setup",
+        isEnabled: isActive && session.canRememberSetup,
+        session: session
+      ))
+    menu.addItem(
+      makeMenuItem(
+        title: L10n.string("menu.restoreSetup"),
+        action: #selector(restoreSetupFromMenu(_:)),
+        identifier: prefix + "restore-setup",
+        isEnabled: isActive && session.canChooseSource && savedSetupStore.savedSetup != nil,
+        session: session
+      ))
+    menu.addItem(
+      makeMenuItem(
+        title: L10n.string(
+          session.hasPendingResumeRegion ? "menu.applyPreviousRegion" : "menu.applySavedSetup"),
+        action: #selector(applySavedSetupFromMenu(_:)),
+        identifier: prefix
+          + (session.hasPendingResumeRegion ? "apply-previous-region" : "apply-saved-setup"),
+        isEnabled: isActive && session.canApplySavedSetup,
+        session: session
+      ))
+    menu.addItem(
+      makeMenuItem(
+        title: L10n.string("menu.forgetSetup"),
+        action: #selector(forgetSetupFromMenu(_:)),
+        identifier: prefix + "forget-setup",
+        isEnabled: isActive && savedSetupStore.savedSetup != nil,
         session: session
       ))
 
@@ -313,18 +395,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
   private func makeStopItem(for session: PiPSession, identifierPrefix prefix: String) -> NSMenuItem
   {
-    let isCapturing: Bool
-    switch session.state {
-    case .selecting, .starting, .running, .suspended:
-      isCapturing = true
-    case .idle, .stopped, .failed:
-      isCapturing = false
-    }
-    return makeMenuItem(
+    makeMenuItem(
       title: L10n.string("menu.stop"),
       action: #selector(stopCaptureFromMenu(_:)),
       identifier: prefix + "stop",
-      isEnabled: !isTerminating && isCapturing,
+      isEnabled: !isTerminating && session.hasCaptureWork,
       session: session
     )
   }
@@ -404,63 +479,80 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
   // MARK: - Choose Window submenu
 
-  /// Lists capturable windows. The list is fetched asynchronously each time
-  /// the submenu opens; a disabled "Loading…" row stands in until it arrives.
+  private enum WindowMenuResult {
+    case permissionRequired
+    case windows([CapturableWindow])
+    case unavailable
+  }
+
+  /// System consent is always first. The optional catalog is loaded per open.
   private func populateWindowMenu(_ menu: WindowMenu) {
     windowMenuTask?.cancel()
     windowMenuTask = nil
     activeWindowMenu = menu
     menu.removeAllItems()
+    menu.dynamicItemCount = 0
     let prefix = menu.identifierPrefix
-
-    if ScreenCapturePermission.isGranted {
-      menu.addItem(
-        makeDisabledItem(
-          title: L10n.string("menu.loadingWindows"),
-          identifier: prefix + "windows-loading"
-        ))
-      windowMenuTask = Task { @MainActor [weak self, weak menu] in
-        let windows: [CapturableWindow]?
-        do {
-          windows = try await WindowCatalog.fetch()
-        } catch WindowCatalogError.permissionDenied {
-          windows = nil
-        } catch {
-          windows = []
-        }
-        guard let self, let menu, !Task.isCancelled, menu === self.activeWindowMenu else { return }
-        self.windowMenuTask = nil
-        self.replaceWindowItems(in: menu, with: windows)
-      }
-    } else {
-      menu.addItem(makePermissionItem(in: menu))
-    }
-
-    menu.addItem(.separator())
     menu.addItem(
       makeMenuItem(
         title: L10n.string("menu.useSystemPicker"),
         action: #selector(chooseWindowFromMenu(_:)),
-        identifier: prefix + "use-system-picker",
+        identifier: prefix + "choose-window.use-system-picker",
+        isEnabled: !isTerminating && menu.session?.canChooseSource == true,
+        session: menu.session
+      ))
+    menu.addItem(.separator())
+    menu.addItem(.separator())
+    menu.addItem(
+      makeMenuItem(
+        title: L10n.string("windowList.retry"),
+        action: #selector(retryWindowListFromMenu(_:)),
+        identifier: prefix + "retry-window-list",
         isEnabled: !isTerminating,
         session: menu.session
       ))
+    guard ScreenCapturePermission.isGranted else {
+      replaceWindowItems(in: menu, with: .permissionRequired)
+      return
+    }
+    insertWindowItems(
+      [
+        makeDisabledItem(
+          title: L10n.string("menu.loadingWindows"),
+          identifier: prefix + "windows-loading")
+      ], into: menu)
+    windowMenuTask = Task { @MainActor [weak self, weak menu] in
+      let result: WindowMenuResult
+      do {
+        result = .windows(try await WindowCatalog.fetch())
+      } catch WindowCatalogError.permissionDenied {
+        result = .permissionRequired
+      } catch {
+        result = .unavailable
+      }
+      guard let self, let menu, !Task.isCancelled, menu === self.activeWindowMenu else { return }
+      self.windowMenuTask = nil
+      self.replaceWindowItems(in: menu, with: result)
+    }
   }
 
-  /// Replaces every row above the separator; `nil` means permission is missing.
-  private func replaceWindowItems(in menu: WindowMenu, with windows: [CapturableWindow]?) {
-    while let first = menu.items.first, !first.isSeparatorItem {
-      menu.removeItem(first)
-    }
+  /// Keep fixed picker and retry rows while only replacing catalog results.
+  private func insertWindowItems(_ items: [NSMenuItem], into menu: WindowMenu) {
+    for _ in 0..<menu.dynamicItemCount { menu.removeItem(at: 2) }
+    menu.dynamicItemCount = items.count
+    for (index, item) in items.enumerated() { menu.insertItem(item, at: index + 2) }
+    menu.update()
+  }
 
+  private func replaceWindowItems(in menu: WindowMenu, with result: WindowMenuResult) {
     var items: [NSMenuItem] = []
-    if let windows {
+    switch result {
+    case .windows(let windows):
       if windows.isEmpty {
         items.append(
           makeDisabledItem(
             title: L10n.string("menu.noWindows"),
-            identifier: menu.identifierPrefix + "windows-empty"
-          ))
+            identifier: menu.identifierPrefix + "windows-empty"))
       }
       var icons: [pid_t: NSImage] = [:]
       for window in windows {
@@ -468,14 +560,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         icons[window.processID] = icon
         items.append(contentsOf: makeWindowItems(for: window, icon: icon, in: menu))
       }
-    } else {
+    case .permissionRequired:
       items.append(makePermissionItem(in: menu))
+    case .unavailable:
+      items.append(
+        makeDisabledItem(
+          title: L10n.string(SelectionIssue.catalogUnavailable.messageKey),
+          identifier: menu.identifierPrefix + "windows-unavailable"))
     }
-
-    for (index, item) in items.enumerated() {
-      menu.insertItem(item, at: index)
-    }
-    menu.update()
+    insertWindowItems(items, into: menu)
   }
 
   /// A window row plus its ⌥ alternate that also enters region selection.
@@ -489,7 +582,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
       title: title,
       action: #selector(pickWindowFromMenu(_:)),
       identifier: prefix + "window.\(window.id)",
-      isEnabled: !isTerminating,
+      isEnabled: !isTerminating && menu.session?.canChooseSource == true,
       session: menu.session,
       value: window.id
     )
@@ -501,7 +594,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
       title: regionTitle,
       action: #selector(pickWindowRegionFromMenu(_:)),
       identifier: prefix + "window-region.\(window.id)",
-      isEnabled: !isTerminating,
+      isEnabled: !isTerminating && menu.session?.canChooseSource == true,
       session: menu.session,
       value: window.id
     )
@@ -612,9 +705,45 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
   @objc private func requestScreenRecordingFromMenu(_ sender: Any?) {
     menuTarget(sender)?.session.requestScreenRecordingPermission()
   }
+  @objc private func retryWindowListFromMenu(_ sender: Any?) {
+    guard let target = menuTarget(sender), let menu = (sender as? NSMenuItem)?.menu as? WindowMenu,
+      menu.session === target.session
+    else { return }
+    populateWindowMenu(menu)
+  }
 
   @objc private func showPanelFromMenu(_ sender: Any?) {
     menuTarget(sender)?.session.show()
+  }
+
+  @objc private func hidePanelFromMenu(_ sender: Any?) {
+    menuTarget(sender)?.session.hide()
+  }
+
+  @objc private func resumeCaptureFromMenu(_ sender: Any?) {
+    menuTarget(sender)?.session.resumeCapture()
+  }
+
+  @objc private func openSourceAppFromMenu(_ sender: Any?) {
+    menuTarget(sender)?.session.openSourceApp()
+  }
+
+  @objc private func rememberSetupFromMenu(_ sender: Any?) {
+    menuTarget(sender)?.session.rememberCurrentSetup(in: savedSetupStore)
+  }
+
+  @objc private func restoreSetupFromMenu(_ sender: Any?) {
+    menuTarget(sender)?.session.restoreSavedSetup(from: savedSetupStore)
+  }
+
+  @objc private func applySavedSetupFromMenu(_ sender: Any?) {
+    menuTarget(sender)?.session.applySavedSetup()
+  }
+
+  @objc private func forgetSetupFromMenu(_ sender: Any?) {
+    guard menuTarget(sender) != nil else { return }
+    savedSetupStore.delete()
+    for session in manager.sessions { session.forgetSavedSetup() }
   }
 
   @objc private func selectRegionFromMenu(_ sender: Any?) {
@@ -708,4 +837,5 @@ private final class WindowMenu: NSMenu {
   weak var session: PiPSession?
   /// Prefix of every item identifier, e.g. "pip.menu." or "pip.menu.pip-2.".
   var identifierPrefix = "pip.menu."
+  var dynamicItemCount = 0
 }

@@ -251,14 +251,16 @@ private final class WindowRowView: NSView {
 /// because the hosting panel is nonactivating and usually not key.
 ///
 /// The bottom `bottomReservedHeight` points hold no controls: the panel floats
-/// its status pill there. The list scrolls underneath via a bottom content
-/// inset, and messages center above the strip.
+/// its status pill there. Rows scroll underneath it, while long paused/error
+/// messages scroll above it so actions remain reachable at minimum size.
 @MainActor
 final class WindowListView: NSView {
   enum Content: Equatable {
     case loading
     case permissionRequired
     case windows([CapturableWindow])
+    case failure(SelectionIssue)
+    case paused(source: String, canResume: Bool)
   }
 
   var onPick: ((CGWindowID) -> Void)?
@@ -266,6 +268,7 @@ final class WindowListView: NSView {
   var onRefresh: (() -> Void)?
   var onUseSystemPicker: (() -> Void)?
   var onRequestPermission: (() -> Void)?
+  var onResumeCapture: (() -> Void)?
 
   private static let messageMaxWidth: CGFloat = 280
   /// Bottom strip kept free for the panel's status HUD.
@@ -276,6 +279,8 @@ final class WindowListView: NSView {
   private let headerLabel = NSTextField(labelWithString: L10n.string("windowList.header"))
   private let refreshButton = FirstMouseButton(frame: .zero)
   private let bodyContainer = NSView()
+  private let messageScrollView = NSScrollView()
+  private let messageDocumentView = FlippedDocumentView()
   private let scrollView = NSScrollView()
   private let documentView = FlippedDocumentView()
   private let rowStack = NSStackView()
@@ -288,6 +293,12 @@ final class WindowListView: NSView {
     title: L10n.string("permission.open"), target: nil, action: nil)
   private let systemPickerButton = FirstMouseButton(
     title: L10n.string("windowList.systemPicker"), target: nil, action: nil)
+  private let messagePickerButton = FirstMouseButton(
+    title: L10n.string("windowList.systemPicker"), target: nil, action: nil)
+  private let resumeButton = FirstMouseButton(
+    title: L10n.string("menu.resumeCapture"), target: nil, action: nil)
+  private let retryButton = FirstMouseButton(
+    title: L10n.string("windowList.retry"), target: nil, action: nil)
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -337,7 +348,7 @@ final class WindowListView: NSView {
         symbol: nil,
         title: nil,
         body: L10n.string("windowList.loading"),
-        showsPermissionButton: false)
+        headerPicker: true)
     case .permissionRequired:
       showMessage(
         identifier: "pip.windowList.permission",
@@ -345,7 +356,8 @@ final class WindowListView: NSView {
         symbol: "lock.shield",
         title: L10n.string("permission.title"),
         body: L10n.string("permission.body"),
-        showsPermissionButton: true)
+        picker: true,
+        permission: true)
     case .windows(let windows) where windows.isEmpty:
       showMessage(
         identifier: "pip.windowList.empty",
@@ -353,16 +365,36 @@ final class WindowListView: NSView {
         symbol: "macwindow",
         title: nil,
         body: L10n.string("windowList.empty"),
-        showsPermissionButton: false)
+        picker: true)
     case .windows(let windows):
       showWindows(windows)
+    case .failure(let issue):
+      showMessage(
+        identifier: "pip.windowList.failure",
+        spinning: false,
+        symbol: "exclamationmark.triangle",
+        title: L10n.string("state.error"),
+        body: L10n.string(issue.messageKey),
+        picker: true,
+        retry: true)
+    case .paused(let source, let canResume):
+      showMessage(
+        identifier: "pip.windowList.paused",
+        spinning: false,
+        symbol: nil,
+        title: L10n.string("windowList.pausedTitle"),
+        body: L10n.format("windowList.pausedBody", source),
+        picker: true,
+        resume: true,
+        canResume: canResume)
     }
   }
 
   private func showWindows(_ windows: [CapturableWindow]) {
     spinner.stopAnimation(nil)
-    messageStack.isHidden = true
+    messageScrollView.isHidden = true
     scrollView.isHidden = false
+    systemPickerButton.isHidden = false
     rebuildRows(windows)
   }
 
@@ -372,11 +404,26 @@ final class WindowListView: NSView {
     symbol: String?,
     title: String?,
     body: String,
-    showsPermissionButton: Bool
+    headerPicker: Bool = false,
+    picker: Bool = false,
+    permission: Bool = false,
+    retry: Bool = false,
+    resume: Bool = false,
+    canResume: Bool = false
   ) {
     rebuildRows([])
     scrollView.isHidden = true
-    messageStack.isHidden = false
+    messageScrollView.isHidden = false
+    messageScrollView.contentView.scroll(to: .zero)
+    messageScrollView.reflectScrolledClipView(messageScrollView.contentView)
+    // Never show two system-picker buttons for the same chooser state.
+    systemPickerButton.isHidden = !headerPicker
+    messagePickerButton.isHidden = !picker
+    permissionButton.isHidden = !permission
+    retryButton.isHidden = !retry
+    resumeButton.isHidden = !resume
+    messagePickerButton.bezelColor = resume ? nil : .controlAccentColor
+    resumeButton.isEnabled = canResume
 
     spinner.isHidden = !spinning
     if spinning {
@@ -397,8 +444,6 @@ final class WindowListView: NSView {
     messageTitle.stringValue = title ?? ""
     messageTitle.isHidden = title == nil
     messageBody.stringValue = body
-    permissionButton.isHidden = !showsPermissionButton
-
     messageStack.setAccessibilityIdentifier(identifier)
     messageStack.setAccessibilityLabel(title ?? body)
     needsLayout = true
@@ -436,6 +481,10 @@ final class WindowListView: NSView {
     onRequestPermission?()
   }
 
+  @objc private func resumePressed(_ sender: NSButton) {
+    onResumeCapture?()
+  }
+
   // MARK: - Setup
 
   private func configureView() {
@@ -452,26 +501,23 @@ final class WindowListView: NSView {
     bodyContainer.translatesAutoresizingMaskIntoConstraints = false
     bodyContainer.clipsToBounds = true
     bodyContainer.addSubview(scrollView)
-    bodyContainer.addSubview(messageStack)
+    bodyContainer.addSubview(messageScrollView)
 
     addSubview(header)
     addSubview(bodyContainer)
 
-    // Messages center in the body above the reserved bottom strip. None of the
-    // vertical message constraints are required: in a panel too short for the
-    // message it pins to the top and the overflow is clipped, rather than
-    // forcing the panel taller.
-    let messageArea = NSLayoutGuide()
-    bodyContainer.addLayoutGuide(messageArea)
-    let messageAreaBottom = messageArea.bottomAnchor.constraint(
-      equalTo: bodyContainer.bottomAnchor, constant: -Self.bottomReservedHeight)
-    messageAreaBottom.priority = .defaultHigh
-    let messageTop = messageStack.topAnchor.constraint(
-      greaterThanOrEqualTo: messageArea.topAnchor, constant: 4)
-    messageTop.priority = .defaultHigh
-    let messageCenter = messageStack.centerYAnchor.constraint(
-      equalTo: messageArea.centerYAnchor)
-    messageCenter.priority = .defaultLow
+    // Error and paused copy may be long in either language. Scrolling keeps
+    // both actions reachable at the panel's minimum size without resizing it.
+    messageScrollView.translatesAutoresizingMaskIntoConstraints = false
+    messageScrollView.drawsBackground = false
+    messageScrollView.hasVerticalScroller = true
+    messageScrollView.hasHorizontalScroller = false
+    messageScrollView.autohidesScrollers = true
+    messageScrollView.scrollerStyle = .overlay
+    messageScrollView.automaticallyAdjustsContentInsets = false
+    messageDocumentView.translatesAutoresizingMaskIntoConstraints = false
+    messageDocumentView.addSubview(messageStack)
+    messageScrollView.documentView = messageDocumentView
 
     NSLayoutConstraint.activate([
       header.topAnchor.constraint(equalTo: topAnchor, constant: 8),
@@ -488,17 +534,28 @@ final class WindowListView: NSView {
       scrollView.trailingAnchor.constraint(equalTo: bodyContainer.trailingAnchor),
       scrollView.bottomAnchor.constraint(equalTo: bodyContainer.bottomAnchor),
 
-      messageArea.topAnchor.constraint(equalTo: bodyContainer.topAnchor),
-      messageAreaBottom,
+      messageScrollView.topAnchor.constraint(equalTo: bodyContainer.topAnchor),
+      messageScrollView.leadingAnchor.constraint(equalTo: bodyContainer.leadingAnchor),
+      messageScrollView.trailingAnchor.constraint(equalTo: bodyContainer.trailingAnchor),
+      messageScrollView.bottomAnchor.constraint(
+        equalTo: bodyContainer.bottomAnchor, constant: -Self.bottomReservedHeight),
 
-      messageStack.centerXAnchor.constraint(equalTo: bodyContainer.centerXAnchor),
-      messageTop,
+      messageDocumentView.leadingAnchor.constraint(
+        equalTo: messageScrollView.contentView.leadingAnchor),
+      messageDocumentView.topAnchor.constraint(
+        equalTo: messageScrollView.contentView.topAnchor),
+      messageDocumentView.widthAnchor.constraint(
+        equalTo: messageScrollView.contentView.widthAnchor),
+      messageStack.topAnchor.constraint(
+        equalTo: messageDocumentView.topAnchor, constant: 4),
+      messageStack.centerXAnchor.constraint(equalTo: messageDocumentView.centerXAnchor),
       messageStack.leadingAnchor.constraint(
-        greaterThanOrEqualTo: bodyContainer.leadingAnchor, constant: 16),
+        greaterThanOrEqualTo: messageDocumentView.leadingAnchor, constant: 16),
       messageStack.trailingAnchor.constraint(
-        lessThanOrEqualTo: bodyContainer.trailingAnchor, constant: -16),
+        lessThanOrEqualTo: messageDocumentView.trailingAnchor, constant: -16),
       messageStack.widthAnchor.constraint(lessThanOrEqualToConstant: Self.messageMaxWidth),
-      messageCenter,
+      messageStack.bottomAnchor.constraint(
+        equalTo: messageDocumentView.bottomAnchor, constant: -8),
     ])
   }
 
@@ -619,26 +676,56 @@ final class WindowListView: NSView {
     messageBody.isSelectable = false
     messageBody.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-    let permissionLabel = L10n.string("permission.open")
-    permissionButton.bezelStyle = .push
-    permissionButton.controlSize = .small
-    permissionButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-    permissionButton.bezelColor = .controlAccentColor
-    permissionButton.focusRingType = .none
-    permissionButton.setAccessibilityIdentifier("pip.windowList.permission.open")
-    permissionButton.setAccessibilityLabel(permissionLabel)
-    permissionButton.target = self
-    permissionButton.action = #selector(permissionPressed(_:))
+    // A message has one prominent action: Resume for a paused source,
+    // otherwise the system picker. Catalog authorization and retry are secondary.
+    configureMessageButton(
+      resumeButton, identifier: "pip.windowList.resume",
+      action: #selector(resumePressed(_:)), prominent: true)
+    configureMessageButton(
+      messagePickerButton, identifier: "pip.windowList.systemPicker",
+      action: #selector(systemPickerPressed(_:)), prominent: true)
+    configureMessageButton(
+      permissionButton, identifier: "pip.windowList.permission.open",
+      action: #selector(permissionPressed(_:)), prominent: false)
+    configureMessageButton(
+      retryButton, identifier: "pip.windowList.retry",
+      action: #selector(refreshPressed(_:)), prominent: false)
 
-    for view in [spinner, messageIcon, messageTitle, messageBody, permissionButton] as [NSView] {
+    for view in [
+      spinner, messageTitle, resumeButton, messagePickerButton, permissionButton,
+      retryButton, messageBody, messageIcon,
+    ] as [NSView] {
       messageStack.addArrangedSubview(view)
     }
     messageStack.orientation = .vertical
     messageStack.alignment = .centerX
     messageStack.spacing = 6
-    messageStack.setCustomSpacing(10, after: messageBody)
     messageStack.translatesAutoresizingMaskIntoConstraints = false
     messageStack.setAccessibilityElement(true)
     messageStack.setAccessibilityRole(.group)
+    NSLayoutConstraint.activate([
+      messageTitle.widthAnchor.constraint(lessThanOrEqualTo: messageStack.widthAnchor),
+      messageBody.widthAnchor.constraint(equalTo: messageStack.widthAnchor),
+      resumeButton.widthAnchor.constraint(lessThanOrEqualTo: messageStack.widthAnchor),
+      messagePickerButton.widthAnchor.constraint(lessThanOrEqualTo: messageStack.widthAnchor),
+      permissionButton.widthAnchor.constraint(lessThanOrEqualTo: messageStack.widthAnchor),
+      retryButton.widthAnchor.constraint(lessThanOrEqualTo: messageStack.widthAnchor),
+    ])
+  }
+
+  private func configureMessageButton(
+    _ button: FirstMouseButton, identifier: String, action: Selector, prominent: Bool
+  ) {
+    button.bezelStyle = .push
+    button.controlSize = .small
+    button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    button.bezelColor = prominent ? .controlAccentColor : nil
+    button.focusRingType = .none
+    button.lineBreakMode = .byTruncatingTail
+    button.setAccessibilityIdentifier(identifier)
+    button.setAccessibilityLabel(button.title)
+    button.target = self
+    button.action = action
+    button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
   }
 }
